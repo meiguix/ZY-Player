@@ -10,7 +10,8 @@
         </el-option>
       </el-select>
       <el-switch v-model="searchViewMode" active-text="海报" active-value="picture" inactive-text="列表" inactive-value="table" @change="updateSearchViewMode"
-                 v-if="show.find"></el-switch>
+                 v-if="show.find">
+      </el-switch>
       <el-select v-model="selectedClassName" size="small" placeholder="类型" :popper-append-to-body="false" popper-class="popper" @change="classClick" v-show="show.class">
         <el-option
           v-for="item in classList"
@@ -47,9 +48,36 @@
         <el-button icon="el-icon-search" @click.stop="searchEvent" slot="append" />
       </el-autocomplete>
     </div>
+    <div class="toolbar" v-if="!show.find && showToolbar">
+      <el-select v-model="selectedAreas" size="small" multiple collapse-tags placeholder="地区" popper-class="popper" :popper-append-to-body="false" @remove-tag="refreshFilteredList" @visible-change="refreshFilteredList($event)">
+        <el-option
+          v-for="item in areas"
+          :key="item"
+          :label="item"
+          :value="item">
+        </el-option>
+      </el-select>
+      <el-select v-model="sortKeyword" size="small" placeholder="排序" popper-class="popper" :popper-append-to-body="false" @change="refreshFilteredList">
+        <el-option
+          v-for="item in sortKeywords"
+          :key="item"
+          :label="item"
+          :value="item">
+        </el-option>
+      </el-select>
+      <span>
+       上映区间：
+       <el-input-number size="small" v-model="selectedYears.start" :min=0 :max="new Date().getFullYear()" controls-position="right" step-strictly @change="refreshFilteredList"></el-input-number>
+       至
+       <el-input-number size="small" v-model="selectedYears.end" :min=0 :max="new Date().getFullYear()" controls-position="right" step-strictly @change="refreshFilteredList"></el-input-number>
+       </span>
+    </div>
+    <el-divider content-position="center" v-if="!show.find">
+      <el-button type="text" size="mini" @click='() => { showToolbar = !showToolbar; if (!showToolbar) this.refreshFilteredList() }'>{{ showToolbar ? '隐藏工具栏' : '显示工具栏' }}</el-button>
+    </el-divider>
     <div class="listpage-body" id="film-body" infinite-wrapper>
       <div class="show-picture" v-if="setting.view === 'picture' && !show.find">
-          <Waterfall ref="filmWaterfall" :list="list" :gutter="20" :width="240"
+          <Waterfall ref="filmWaterfall" :list="filteredList" :gutter="20" :width="240"
           :breakpoints="{
             1200: { //当屏幕宽度小于等于1200
               rowPerView: 4,
@@ -64,7 +92,7 @@
           animationEffect="fadeIn"
           backgroundColor="rgba(0, 0, 0, 0)">
             <template slot="item" slot-scope="props">
-              <div class="card" v-show="!setting.excludeR18Films || !containsR18Keywords(props.data.type)">
+              <div class="card">
                 <div class="img">
                   <img style="width: 100%" :src="props.data.pic" alt="" @load="$refs.filmWaterfall.refresh()" @click="detailEvent(site, props.data)">
                   <div class="operate">
@@ -90,7 +118,7 @@
       <div class="show-table" v-if="setting.view === 'table' && !show.find">
         <el-table
           size="mini"
-          :data="list.filter(res => !setting.excludeR18Films || !containsR18Keywords(res.type))"
+          :data="filteredList"
           height="100%"
           :empty-text="statusText"
           @row-click="(row) => detailEvent(site, row)"
@@ -152,7 +180,7 @@
           </infinite-loading>
         </el-table>
       </div>
-      <div class="show-table" v-show="searchViewMode=== 'table' && show.find">
+      <div class="show-table" v-if="searchViewMode=== 'table' && show.find">
         <el-table size="mini"
           ref="searchResultTable"
           :data="searchContents.filter(res => !setting.excludeR18Films || (res.type !== undefined && !containsR18Keywords(res.type)))"
@@ -226,7 +254,7 @@
           </el-table-column>
         </el-table>
       </div>
-      <div class="show-picture" v-show="searchViewMode === 'picture' && show.find">
+      <div class="show-picture" v-if="searchViewMode === 'picture' && show.find">
           <Waterfall ref="filmSearchWaterfall" :list="searchContents.filter(res => !setting.excludeR18Films || (res.type !== undefined && !containsR18Keywords(res.type)))" :gutter="20" :width="240"
           :breakpoints="{
             1200: { //当屏幕宽度小于等于1200
@@ -277,6 +305,7 @@ import zy from '../lib/site/tools'
 import Waterfall from 'vue-waterfall-plugin'
 import InfiniteLoading from 'vue-infinite-loading'
 const { clipboard } = require('electron')
+const FILM_DATA_CACHE = {} // key = site.key, value = classList; key = site.key + '@' + type.tid, value = {list, pageCount}
 export default {
   name: 'film',
   data () {
@@ -292,9 +321,10 @@ export default {
       site: {},
       classList: [],
       type: {},
-      selectedClassName: '最新',
       selectedSiteName: '',
+      selectedClassName: '',
       pagecount: 0,
+      recordcount: 0,
       list: [],
       statusText: ' ',
       infiniteId: +new Date(),
@@ -307,7 +337,14 @@ export default {
       searchGroups: [],
       // 福利片关键词
       r18KeyWords: ['伦理', '论理', '倫理', '福利', '激情', '理论', '写真', '情色', '美女', '街拍', '赤足', '性感', '里番'],
-      searchViewMode: 'picture'
+      searchViewMode: 'picture',
+      filteredList: [],
+      areas: [],
+      selectedAreas: [],
+      sortKeyword: '',
+      sortKeywords: ['按片名', '按上映年份', '按更新时间'],
+      selectedYears: { start: 0, end: new Date().getFullYear() },
+      showToolbar: false
     }
   },
   components: {
@@ -378,10 +415,51 @@ export default {
     },
     filterSettings () {
       this.siteClick(this.site.name)
+    },
+    list: {
+      handler (list) {
+        this.areas = [...new Set(list.map(ele => ele.area))].filter(x => x)
+        this.refreshFilteredList()
+      },
+      deep: true
     }
   },
   methods: {
     ...mapMutations(['SET_VIEW', 'SET_DETAIL', 'SET_VIDEO', 'SET_SHARE', 'SET_SETTING']),
+    refreshFilteredList (popperVisible) {
+      if (popperVisible === true) return
+      if (!this.showToolbar) {
+        this.sortKeyword = ''
+        this.selectedAreas = []
+        this.selectedYears.start = 0
+        this.selectedYears.end = new Date().getFullYear()
+      }
+      let filteredData = this.list.filter(x => (this.selectedAreas.length === 0) || this.selectedAreas.includes(x.area))
+      filteredData = filteredData.filter(res => !this.setting.excludeR18Films || !this.containsR18Keywords(res.type))
+      filteredData = filteredData.filter(res => res.year >= this.selectedYears.start)
+      filteredData = filteredData.filter(res => res.year <= this.selectedYears.end)
+      this.selectedClassName = this.type.name + '    ' + filteredData.length + '/' + this.recordcount
+      switch (this.sortKeyword) {
+        case '按上映年份':
+          filteredData.sort(function (a, b) {
+            return a.year - b.year
+          })
+          break
+        case '按片名':
+          filteredData.sort(function (a, b) {
+            return a.name.localeCompare(b.name, 'zh')
+          })
+          break
+        case '按更新时间':
+          filteredData.sort(function (a, b) {
+            return new Date(b.last) - new Date(a.last)
+          })
+          break
+        default:
+          break
+      }
+      this.filteredList = filteredData
+    },
     updateSearchViewMode () {
       setting.find().then(res => {
         res.searchViewMode = this.searchViewMode
@@ -417,15 +495,22 @@ export default {
     siteClick (siteName) {
       this.list = []
       this.site = this.sites.find(x => x.name === siteName)
-      if (this.searchTxt.length > 0 && this.searchGroup === '站内') {
-        this.searchEvent()
+      this.searchTxt = ''
+      this.show.find = false
+      this.classList = []
+      if (FILM_DATA_CACHE[this.site.key]) {
+        this.classList = FILM_DATA_CACHE[this.site.key].classList
+        this.show.class = true
+        this.classClick(this.type.name)
       } else {
-        this.searchTxt = ''
-        this.show.find = false
-        this.classList = []
-        this.type = {}
         this.getClass().then(res => {
-          this.classClick(this.classList[0].name)
+          this.classList = res
+          this.show.class = true
+          // cache classList data
+          FILM_DATA_CACHE[this.site.key] = {
+            classList: this.classList
+          }
+          this.classClick(this.type.name)
         })
       }
     },
@@ -433,11 +518,22 @@ export default {
       this.show.classList = false
       this.list = []
       this.type = this.classList.find(x => x.name === className)
-      this.getPage().then(res => {
-        if (res) {
+      if (!this.type) {
+        this.type = this.classList[0]
+      }
+      const cacheKey = this.site.key + '@' + this.type.tid
+      if (FILM_DATA_CACHE[cacheKey]) {
+        this.pagecount = FILM_DATA_CACHE[cacheKey].pagecount
+        this.recordcount = FILM_DATA_CACHE[cacheKey].recordcount
+        this.list = FILM_DATA_CACHE[cacheKey].list
+        this.areas = FILM_DATA_CACHE[cacheKey].areas
+      } else {
+        zy.page(this.site.key, this.type.tid).then(res => {
+          this.pagecount = res.pagecount
+          this.recordcount = res.recordcount
           this.infiniteId += 1
-        }
-      })
+        })
+      }
     },
     getClass () {
       return new Promise((resolve, reject) => {
@@ -458,11 +554,7 @@ export default {
               }
             }
           })
-          this.classList = allClass
-          this.show.class = true
-          this.pagecount = res.pagecount
-          this.type = this.classList[0]
-          resolve(true)
+          resolve(allClass)
         }).catch(err => {
           reject(err)
         })
@@ -475,30 +567,17 @@ export default {
       }
       return this.r18KeyWords.some(v => name.includes(v))
     },
-    getPage () {
-      return new Promise((resolve, reject) => {
-        const key = this.site.key
-        const type = this.type.tid
-        zy.page(key, type).then(res => {
-          this.pagecount = res.pagecount
-          this.show.body = true
-          resolve(true)
-        }).catch(err => {
-          reject(err)
-        })
-      })
-    },
     infiniteHandler ($state) {
       const key = this.site.key
-      const type = this.type.tid
+      const typeTid = this.type.tid
       const page = this.pagecount
       this.statusText = ' '
-      if (key === undefined || page < 1 || type === undefined) { // OK资源前几类硬是去不掉
+      if (key === undefined || page < 1 || typeTid === undefined) {
         $state.complete()
         this.statusText = '暂无数据'
         return false
       }
-      zy.list(key, page, type).then(res => {
+      zy.list(key, page, typeTid).then(res => {
         if (res) {
           this.pagecount -= 1
           const type = Object.prototype.toString.call(res)
@@ -514,12 +593,16 @@ export default {
           }
           $state.loaded()
           // 数据更新后,刷新页面
-          if (this.$refs.filmWaterfall) {
+          if (this.setting.view === 'picture' && this.$refs.filmWaterfall) {
             this.$refs.filmWaterfall.refresh()
           }
-        } else {
-          $state.complete()
-          this.statusText = '暂无数据'
+          // 更新缓存数据
+          const cacheKey = this.site.key + '@' + typeTid
+          FILM_DATA_CACHE[cacheKey] = {
+            pagecount: this.pagecount,
+            recordcount: this.recordcount,
+            list: this.list
+          }
         }
       })
     },
@@ -570,41 +653,29 @@ export default {
       }
     },
     downloadEvent (site, row) {
-      zy.download(site.key, row.id).then(res => {
-        if (res && res.length > 0) {
-          const text = res.dl.dd._t
-          if (text) {
-            const list = text.split('#')
-            let downloadUrl = res.name + '\n'
+      const key = site.key
+      const id = row.id
+      zy.download(key, id).then(res => {
+        if (res && res.m3u8List) {
+          const list = res.m3u8List.split('#')
+          let downloadUrl = ''
+          for (const i of list) {
+            const url = encodeURI(i.split('$')[1])
+            downloadUrl += (url + '\n')
+          }
+          clipboard.writeText(downloadUrl)
+          this.$message.success('『MP4』格式的链接已复制, 快去下载吧!')
+        } else {
+          zy.detail(key, id).then(res => {
+            const list = [...res.m3u8List]
+            let downloadUrl = ''
             for (const i of list) {
               const url = encodeURI(i.split('$')[1])
               downloadUrl += (url + '\n')
             }
             clipboard.writeText(downloadUrl)
-            this.$message.success('『MP4』格式的链接已复制, 快去下载吧!')
-          } else {
-            this.$message.warning('没有查询到下载链接.')
-          }
-        } else {
-          let m3u8List = []
-          const dd = row.dl.dd
-          const type = Object.prototype.toString.call(dd)
-          if (type === '[object Array]') {
-            for (const i of dd) {
-              if (i._flag.indexOf('m3u8') >= 0) {
-                m3u8List = i._t.split('#')
-              }
-            }
-          } else {
-            m3u8List = dd._t.split('#')
-          }
-          let downloadUrl = row.name + '\n'
-          for (const i of m3u8List) {
-            const url = encodeURI(i.split('$')[1])
-            downloadUrl += (url + '\n')
-          }
-          clipboard.writeText(downloadUrl)
-          this.$message.success('『M3U8』格式的链接已复制, 快去下载吧!')
+            this.$message.success('『M3U8』格式的链接已复制, 快去下载吧!')
+          })
         }
       })
     },
@@ -666,7 +737,6 @@ export default {
         searchSites = this.sites.filter(site => site.group === this.searchGroup)
       }
       this.searchContents = []
-      this.pagecount = 0
       this.show.find = true
       this.show.class = false
       this.statusText = ' '
@@ -717,12 +787,6 @@ export default {
         this.show.find = false
         if (this.setting.view === 'picture' && this.$refs.filmWaterfall) {
           this.$refs.filmWaterfall.refresh()
-        } else {
-          this.getClass().then(res => {
-            if (res) {
-              this.infiniteId += 1
-            }
-          })
         }
       }
     },

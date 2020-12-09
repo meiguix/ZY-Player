@@ -123,7 +123,7 @@
   border-radius: 5px;
   display: flex;
   flex-direction: column;
-  .listpage-header{
+  .listpage-header, .toolbar{
     height: 60px;
     width: 100%;
     display: flex;
@@ -175,7 +175,35 @@
         font-size: 1rem;
         border: none;
       }
+      .el-select-dropdown__item.selected.hover{ //是上游的bug吗？临时性修补
+        background-color: transparent;
+      }
     }
+    > span{
+      .el-input-number{
+        width:120px;
+        .el-input{
+          width: 100px;
+        }
+        .el-input__inner{
+          padding-left: 5px;
+          padding-right: 5px;
+          width: 88px;
+        }
+        .el-input-number__increase, .el-input-number__decrease {
+          background-color: inherit;
+          border: none;
+        }
+      }
+    }
+  }
+  .el-divider{
+    .el-divider--horizontal{
+      margin: 12px 0;
+    }
+  }
+  .toolbar{
+    z-index: 5;
   }
   .listpage-body{
     height: calc(100% - 60px);

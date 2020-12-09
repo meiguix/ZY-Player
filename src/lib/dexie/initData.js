@@ -19,7 +19,9 @@ const setting = [
       scheme: '',
       url: '',
       port: ''
-    }
+    },
+    allowPassWhenIptvCheck: true,
+    autocleanWhenIptvCheck: false
   }
 ]
 
@@ -66,7 +68,7 @@ const localKey = [
   },
   {
     name: 'escape',
-    desc: '退出全屏',
+    desc: '退出全屏/精简模式',
     key: 'esc'
   },
   {
@@ -88,6 +90,21 @@ const localKey = [
     name: 'end',
     desc: '跳到视频结束位置',
     key: 'end'
+  },
+  {
+    name: 'startPosition',
+    desc: '标记片头',
+    key: 'ctrl+home'
+  },
+  {
+    name: 'endPosition',
+    desc: '标记片尾',
+    key: 'ctrl+end'
+  },
+  {
+    name: 'clearPosition',
+    desc: '清除标记',
+    key: 'ctrl+del'
   },
   {
     name: 'opacityUp',
@@ -116,7 +133,7 @@ const localKey = [
   },
   {
     name: 'resetMini',
-    desc: '恢复mini窗口默认',
+    desc: '重置mini窗口',
     key: 'ctrl+0'
   }
 ]

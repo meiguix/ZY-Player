@@ -74,20 +74,9 @@ export default {
       zy.detail(this.share.key, id).then(res => {
         if (res) {
           this.pic = res.pic
-          var m3u8List = {}
-          const dd = res.dl.dd
-          const type = Object.prototype.toString.call(dd)
-          if (type === '[object Array]') {
-            for (const i of dd) {
-              if (i._flag.indexOf('m3u8') >= 0) {
-                m3u8List = i._t.split('#')
-              }
-            }
-          } else {
-            m3u8List = dd._t.split('#')
-          }
+          var m3u8List = res.m3u8List
           const url = m3u8List[1]
-          this.link = 'http://zyplayer.fun/player/player.html?url=' + url + '&title=' + this.share.info.name
+          this.link = 'http://hunlongyu.gitee.io/zy-player-web?url=' + url + '&name=' + this.share.info.name
         }
         this.loading = false
       })

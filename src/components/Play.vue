@@ -98,6 +98,24 @@
             <circle cx="12" cy="12" r="10"></circle>
           </svg>
         </span>
+        <span class="timespanSwitch" v-if="right.list.length > 1">
+          <el-switch v-model="showTimeSpanSetting" active-text="跳略设置"></el-switch>
+        </span>
+        <span class="timespan" v-if="showTimeSpanSetting">
+          <label>片头长度：</label>
+          <input type="number" v-model="startPosition.min" style="width:45px" min="00" max="59" placeholder="00" required>
+          <label>:</label>
+          <input type="number" v-model="startPosition.sec" style="width:45px" min="00" max="59" placeholder="00" required>
+          <span></span>
+          <label>片尾长度：</label>
+          <input type="number" v-model="endPosition.min" style="width:45px" min="00" max="59" placeholder="00" required>
+          <label>:</label>
+          <input type="number" v-model="endPosition.sec" style="width:45px" min="00" max="59" placeholder="00" required>
+          <span></span>
+          <input type="button" value="确定" @click="setProgressDotByInput" title="还可以通过快捷键设置">
+          <span></span>
+          <input type="button" value="重置" @click="() => { startPosition.min = startPosition.sec = endPosition.min = endPosition.sec = '00'; this.clearPosition() }">
+        </span>
         <span class="last-tip" v-if="!video.key && right.history.length > 0" @click="historyItemEvent(right.history[0])">上次播放到【{{right.history[0].site}}】{{right.history[0].name}} 第{{right.history[0].index+1}}集</span>
       </div>
       <div class="more" v-if="video.iptv" :key="Boolean(video.iptv)">
@@ -308,7 +326,8 @@ export default {
         videoTitle: true,
         airplay: true,
         closeVideoTouch: true,
-        ignores: ['cssFullscreen']
+        ignores: ['cssFullscreen', 'replay'],
+        preloadTime: 300
       },
       state: {
         showList: false,
@@ -329,7 +348,10 @@ export default {
       defaultProps: {
         label: 'label',
         children: 'children'
-      }
+      },
+      startPosition: { min: '00', sec: '00' },
+      endPosition: { min: '00', sec: '00' },
+      showTimeSpanSetting: false
     }
   },
   filters: {
@@ -426,10 +448,34 @@ export default {
     },
     searchTxt () {
       this.$refs.channelTree.filter(this.searchTxt)
+    },
+    startPosition: {
+      handler (time) {
+        this.leadingZero(time)
+      },
+      deep: true
+    },
+    endPosition: {
+      handler (time) {
+        this.leadingZero(time)
+      },
+      deep: true
     }
   },
   methods: {
     ...mapMutations(['SET_VIEW', 'SET_DETAIL', 'SET_VIDEO', 'SET_SHARE', 'SET_APPSTATE']),
+    leadingZero (time) {
+      Object.keys(time).forEach(key => {
+        if (time[key] > 59 || time[key] < 0) {
+          time[key] = '00'
+        } else if (time[key].length > 2) {
+          time[key] = '' + parseInt(time[key])
+          // time[key] = time[key].replace(/^0+/, '')
+        } else if (time[key] < 10 && time[key].length === 1) {
+          time[key] = '0' + time[key]
+        }
+      })
+    },
     handleNodeClick (node) {
       if (node.channel) {
         this.playChannel(node.channel)
@@ -458,15 +504,24 @@ export default {
         this.playChannel(this.video.iptv)
       } else {
         this.channelListShow = false
-        const index = this.video.info.index | 0
+        const index = this.video.info.index || 0
+        const db = await history.find({ site: this.video.key, ids: this.video.info.id })
+        const key = this.video.key + '@' + this.video.info.id
         var time = this.video.info.time
-        if (!time) {
-          // 如果video.info.time没有设定的话，从历史中读取时间进度
-          const db = await history.find({ site: this.video.key, ids: this.video.info.id })
-          if (db) {
-            if (db.index === index) {
-              time = db.time
-            }
+        this.xg.removeAllProgressDot()
+        this.startPosition = this.endPosition = { min: '00', sec: '00' }
+        if (db) {
+          if (!time && db.index === index) { // 如果video.info.time没有设定的话，从历史中读取时间进度
+            time = db.time
+          }
+          if (!VIDEO_DETAIL_CACHE[key]) VIDEO_DETAIL_CACHE[key] = {}
+          if (db.startPosition) {
+            VIDEO_DETAIL_CACHE[key].startPosition = db.startPosition
+            this.startPosition = { min: '' + parseInt(db.startPosition / 60), sec: '' + parseInt(db.startPosition % 60) }
+          }
+          if (db.endPosition) {
+            VIDEO_DETAIL_CACHE[key].endPosition = db.endPosition
+            this.endPosition = { min: '' + parseInt(db.endPosition / 60), sec: '' + parseInt(db.endPosition % 60) }
           }
         }
         this.playVideo(index, time)
@@ -506,55 +561,50 @@ export default {
       document.querySelector('xg-btn-showhistory').style.display = 'block'
       document.querySelector('.xgplayer-playbackrate').style.display = 'inline-block'
       this.fetchM3u8List().then(m3u8Arr => {
-        this.xg.src = m3u8Arr[index]
-
-        if (time !== 0) {
+        const url = m3u8Arr[index]
+        if (!m3u8Arr[index].endsWith('.m3u8')) {
+          const onlineUrl = 'https://www.1717yun.com/jiexi/?url=' + url
+          const open = require('open')
+          open(onlineUrl)
+        } else {
+          this.xg.src = m3u8Arr[index]
+          const key = this.video.key + '@' + this.video.info.id
+          const startTime = VIDEO_DETAIL_CACHE[key].startPosition || 0
           this.xg.play()
           this.xg.once('playing', () => {
-            this.xg.currentTime = time
+            this.xg.currentTime = time > startTime ? time : startTime
+            if (VIDEO_DETAIL_CACHE[key].startPosition) this.xg.addProgressDot(VIDEO_DETAIL_CACHE[key].startPosition, '片头')
+            if (VIDEO_DETAIL_CACHE[key].endPosition) this.xg.addProgressDot(this.xg.duration - VIDEO_DETAIL_CACHE[key].endPosition, '片尾')
           })
-        } else {
-          this.xg.play()
+          this.videoPlaying()
+          VIDEO_DETAIL_CACHE[key].skipend = false
+          this.xg.once('ended', () => {
+            if (m3u8Arr.length > 1 && (m3u8Arr.length - 1 > index)) {
+              this.video.info.time = 0
+              this.video.info.index++
+            }
+            this.xg.off('ended')
+          })
         }
-
-        this.videoPlaying()
-        this.xg.once('ended', () => {
-          if (m3u8Arr.length > 1 && (m3u8Arr.length - 1 > index)) {
-            this.video.info.time = 0
-            this.video.info.index++
-          }
-          this.xg.off('ended')
-        })
       })
     },
     fetchM3u8List () {
       return new Promise((resolve) => {
         const cacheKey = this.video.key + '@' + this.video.info.id
-        if (VIDEO_DETAIL_CACHE[cacheKey]) {
+        if (VIDEO_DETAIL_CACHE[cacheKey] && VIDEO_DETAIL_CACHE[cacheKey].list && VIDEO_DETAIL_CACHE[cacheKey].list.length) {
           this.name = VIDEO_DETAIL_CACHE[cacheKey].name
           resolve(VIDEO_DETAIL_CACHE[cacheKey].list)
         }
         zy.detail(this.video.key, this.video.info.id).then(res => {
           this.name = res.name
-          const dd = res.dl.dd
-          const type = Object.prototype.toString.call(dd)
-          let m3u8Txt = []
-          if (type === '[object Array]') {
-            for (const i of dd) {
-              if (i._t.indexOf('m3u8') >= 0) {
-                m3u8Txt = i._t.split('#')
-              }
-            }
-          } else {
-            m3u8Txt = dd._t.split('#')
-          }
+          const m3u8Txt = res.m3u8List
           this.right.list = m3u8Txt
           const m3u8Arr = []
           for (const i of m3u8Txt) {
             const j = i.split('$')
             if (j.length > 1) {
               for (let m = 0; m < j.length; m++) {
-                if (j[m].indexOf('.m3u8') >= 0 && j[m].startsWith('http')) {
+                if (j[m].startsWith('http')) {
                   m3u8Arr.push(j[m])
                   break
                 }
@@ -564,10 +614,10 @@ export default {
             }
           }
 
-          VIDEO_DETAIL_CACHE[cacheKey] = {
+          VIDEO_DETAIL_CACHE[cacheKey] = Object.assign(VIDEO_DETAIL_CACHE[cacheKey] || {}, {
             list: m3u8Arr,
             name: res.name
-          }
+          })
           resolve(m3u8Arr)
         })
       })
@@ -607,6 +657,37 @@ export default {
       win.setProgressBar(-1)
       this.checkStar()
       this.checkTop()
+    },
+    async setProgressDotEvent (position, timespan, text) {
+      const key = this.video.key + '@' + this.video.info.id
+      const db = await history.find({ site: this.video.key, ids: this.video.info.id })
+      if (db && this.xg && VIDEO_DETAIL_CACHE[key].list.length > 1) {
+        this[position] = { min: '' + parseInt(timespan / 60), sec: '' + parseInt(timespan % 60) }
+        const positionTime = position === 'endPosition' ? this.xg.duration - timespan : timespan
+        if (db[position]) this.xg.removeProgressDot(position === 'endPosition' ? this.xg.duration - db[position] : db[position])
+        this.xg.addProgressDot(positionTime, text)
+        const doc = { ...db }
+        doc[position] = timespan
+        delete doc.id
+        history.update(db.id, doc)
+        VIDEO_DETAIL_CACHE[key][position] = timespan
+      }
+    },
+    async setProgressDotByInput () {
+      this.xg.removeAllProgressDot()
+      const startTime = parseInt(this.startPosition.min) * 60 + parseInt(this.startPosition.sec)
+      const endTime = parseInt(this.endPosition.min) * 60 + parseInt(this.endPosition.sec)
+      if (startTime > this.xg.duration || endTime > this.xg.duration) {
+        this.$message.error('设置的跳跃时间长度已超过视频播放时长，请调整设置！')
+        return
+      }
+      await this.setProgressDotEvent('startPosition', startTime)
+      await this.setProgressDotEvent('endPosition', endTime)
+    },
+    async clearPosition () {
+      await this.setProgressDotEvent('startPosition', 0)
+      await this.setProgressDotEvent('endPosition', 0)
+      this.xg.removeAllProgressDot()
     },
     timerEvent () {
       this.timer = setInterval(async () => {
@@ -976,7 +1057,7 @@ export default {
         }
       })
     },
-    shortcutEvent (e) {
+    async shortcutEvent (e) {
       if (e === 'playAndPause') {
         if (this.xg) {
           if (this.xg.paused) {
@@ -1068,6 +1149,18 @@ export default {
         }
         return false
       }
+      if (e === 'startPosition') {
+        this.setProgressDotEvent('startPosition', this.xg.currentTime, '片头')
+        return false
+      }
+      if (e === 'endPosition') {
+        this.setProgressDotEvent('endPosition', this.xg.duration - this.xg.currentTime, '片尾')
+        return false
+      }
+      if (e === 'clearPosition') {
+        this.clearPosition()
+        return false
+      }
       if (e === 'opacityUp') {
         const num = win.getOpacity()
         if (num > 0.1) {
@@ -1101,7 +1194,11 @@ export default {
         return false
       }
       if (e === 'mini') {
-        this.miniEvent()
+        if (!this.miniMode) {
+          this.miniEvent()
+        } else {
+          this.exitMiniEvent()
+        }
         return false
       }
       if (e === 'resetMini') {
@@ -1240,6 +1337,19 @@ export default {
         setting.find().then(res => { res.volume = this.config.volume; setting.update(res) })
       })
 
+      this.xg.on('timeupdate', () => {
+        const key = this.video.key + '@' + this.video.info.id
+        if (VIDEO_DETAIL_CACHE[key] && VIDEO_DETAIL_CACHE[key].endPosition) {
+          const time = this.xg.duration - VIDEO_DETAIL_CACHE[key].endPosition - this.xg.currentTime
+          if (time > 0 && time < 0.3) {
+            if (!VIDEO_DETAIL_CACHE[key].skipend) {
+              VIDEO_DETAIL_CACHE[key].skipend = true
+              this.xg.emit('ended')
+            }
+          }
+        }
+      })
+
       this.xg.on('playNextOne', () => {
         this.nextEvent()
       })
@@ -1295,7 +1405,7 @@ export default {
       clearInterval(this.timer)
       this.video.key = ''
       this.xg.src = ''
-      this.config.src = ''
+      this.config.url = ''
       this.xg.destroy(false)
       this.xg = null
       this.name = ''
@@ -1553,6 +1663,16 @@ export default {
         display: flex;
         margin-right: 10px;
         cursor: pointer;
+      }
+      .timespan{
+        margin-left: auto;
+        justify-content: space-between;
+        align-items: center;
+        input{
+          &::-webkit-inner-spin-button, &::-webkit-outer-spin-button {
+            opacity: 1;
+          }
+        }
       }
     }
   }
