@@ -52,10 +52,16 @@
           </span>
         </div>
         <div
-          class="desc" v-show="info.des">{{info.des}}</div>
+          class="desc" v-show="info.des">{{info.des}}
+        </div>
+        <div class="m3u8" v-if="videoFullList.length > 1">
+          <div class="box">
+            <span v-bind:class="{ selected: i.flag === videoFlag }" v-for="(i, j) in videoFullList" :key="j" @click="updateVideoList(i)">{{i.flag}}</span>
+          </div>
+        </div>
         <div class="m3u8">
           <div class="box">
-            <span v-for="(i, j) in m3u8List" :key="j" @click="playEvent(j)">{{i | ftName}}</span>
+            <span v-for="(i, j) in videoList" :key="j" @click="playEvent(j)">{{i | ftName}}</span>
           </div>
         </div>
       </div>
@@ -76,7 +82,9 @@ export default {
   data () {
     return {
       loading: true,
-      m3u8List: [],
+      videoFlag: '',
+      videoList: [],
+      videoFullList: [],
       info: {},
       playOnline: false,
       selectedOnlineSite: '哔嘀',
@@ -121,20 +129,39 @@ export default {
       set (val) {
         this.SET_SHARE(val)
       }
+    },
+    DetailCache: {
+      get () {
+        return this.$store.getters.getDetailCache
+      },
+      set (val) {
+        this.SET_DetailCache(val)
+      }
     }
   },
   methods: {
-    ...mapMutations(['SET_VIEW', 'SET_VIDEO', 'SET_DETAIL', 'SET_SHARE']),
+    ...mapMutations(['SET_VIEW', 'SET_VIDEO', 'SET_DETAIL', 'SET_SHARE', 'SET_DetailCache']),
+    addClass (flag) {
+      if (flag === this.videoFlag) {
+        return 'selectedBox'
+      } else {
+        return 'box'
+      }
+    },
     close () {
       this.detail.show = false
+    },
+    updateVideoList (e) {
+      this.videoFlag = e.flag
+      this.videoList = e.list
     },
     async playEvent (n) {
       if (!this.playOnline) {
         const db = await history.find({ site: this.detail.key, ids: this.detail.info.id })
         if (db) {
-          this.video = { key: db.site, info: { id: db.ids, name: db.name, index: n, site: this.detail.site } }
+          this.video = { key: db.site, info: { id: db.ids, name: db.name, index: n, site: this.detail.site, videoFlag: this.videoFlag } }
         } else {
-          this.video = { key: this.detail.key, info: { id: this.detail.info.id, name: this.detail.info.name, index: n, site: this.detail.site } }
+          this.video = { key: this.detail.key, info: { id: this.detail.info.id, name: this.detail.info.name, index: n, site: this.detail.site, videoFlag: this.videoFlag } }
         }
         this.video.detail = this.info
         this.view = 'Play'
@@ -211,63 +238,52 @@ export default {
       }
     },
     downloadEvent () {
-      const key = this.detail.key
-      const id = this.info.id
-      zy.download(key, id).then(res => {
-        if (res && res.m3u8List) {
-          const list = res.m3u8List.split('#')
-          let downloadUrl = ''
-          for (const i of list) {
-            const url = encodeURI(i.split('$')[1])
-            downloadUrl += (url + '\n')
-          }
-          clipboard.writeText(downloadUrl)
-          this.$message.success('『MP4』格式的链接已复制, 快去下载吧!')
-        } else {
-          zy.detail(key, id).then(res => {
-            const list = [...res.m3u8List]
-            let downloadUrl = ''
-            for (const i of list) {
-              const url = encodeURI(i.split('$')[1])
-              downloadUrl += (url + '\n')
-            }
-            clipboard.writeText(downloadUrl)
-            this.$message.success('『M3U8』格式的链接已复制, 快去下载吧!')
-          })
-        }
+      zy.download(this.detail.key, this.info.id).then(res => {
+        clipboard.writeText(res.downloadUrls)
+        this.$message.success(res.info)
+      }).catch((err) => {
+        this.$message.error(err.info)
       })
     },
     shareEvent () {
       this.share = {
         show: true,
         key: this.detail.key,
-        info: this.detail.info
+        info: this.info
       }
     },
     doubanLinkEvent () {
-      const name = this.detail.info.name.trim()
-      zy.doubanLink(name).then(link => {
+      const name = this.info.name.trim()
+      const year = this.info.year
+      zy.doubanLink(name, year).then(link => {
         const open = require('open')
         open(link)
       })
     },
-    getDoubanRate () {
-      const name = this.detail.info.name.trim()
-      zy.doubanRate(name).then(res => {
-        this.info.rate = res
-      })
+    async getDoubanRate () {
+      const name = this.info.name.trim()
+      const year = this.info.year
+      this.info.rate = await zy.doubanRate(name, year)
     },
-    getDetailInfo () {
+    async getDetailInfo () {
       const id = this.detail.info.ids || this.detail.info.id
-      zy.detail(this.detail.key, id).then(res => {
-        if (res) {
-          this.info = res
-          this.$set(this.info, 'rate', '')
-          this.m3u8List = res.m3u8List
-          this.getDoubanRate()
-          this.loading = false
+      const cacheKey = this.detail.key + '@' + id
+      if (!this.DetailCache[cacheKey]) {
+        this.DetailCache[cacheKey] = await zy.detail(this.detail.key, id)
+      }
+      const res = this.DetailCache[cacheKey]
+      if (res) {
+        this.info = res
+        this.$set(this.info, 'rate', this.DetailCache[cacheKey].rate || '')
+        this.videoFlag = res.fullList[0].flag
+        this.videoList = res.fullList[0].list
+        this.videoFullList = res.fullList
+        this.loading = false
+        if (!this.info.rate) {
+          await this.getDoubanRate()
+          this.DetailCache[cacheKey].rate = this.info.rate
         }
-      })
+      }
     }
   },
   created () {
@@ -381,6 +397,15 @@ export default {
       .box {
         width: 100%;
         span {
+          display: inline-block;
+          font-size: 12px;
+          border: 1px solid;
+          border-radius: 2px;
+          cursor: pointer;
+          margin: 6px 10px 0px 0px;
+          padding: 8px 22px;
+        }
+        .selected {
           display: inline-block;
           font-size: 12px;
           border: 1px solid;

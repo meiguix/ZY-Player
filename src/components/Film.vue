@@ -9,15 +9,20 @@
           :value="item.name">
         </el-option>
       </el-select>
-      <el-switch v-model="searchViewMode" active-text="海报" active-value="picture" inactive-text="列表" inactive-value="table" @change="updateSearchViewMode"
-                 v-if="show.find">
-      </el-switch>
-      <el-select v-model="selectedClassName" size="small" placeholder="类型" :popper-append-to-body="false" popper-class="popper" @change="classClick" v-show="show.class">
+      <el-select v-model="selectedClassName" size="small" placeholder="类型" :popper-append-to-body="false" popper-class="popper" @change="classClick" v-if="classList && classList.length" v-show="!showFind">
         <el-option
           v-for="item in classList"
           :key="item.tid"
           :label="item.name"
           :value="item.name">
+        </el-option>
+      </el-select>
+      <el-select v-model="selectedSearchClassNames" size="small" multiple placeholder="类型" :popper-append-to-body="false" popper-class="popper" v-if="searchClassList && searchClassList.length" v-show="showFind && showToolbar" @remove-tag="refreshFilteredList" @change="refreshFilteredList">
+        <el-option
+          v-for="(item, index) in searchClassList"
+          :key='index'
+          :label="item"
+          :value="item">
         </el-option>
       </el-select>
       <el-autocomplete
@@ -45,11 +50,12 @@
           </el-option>
         </el-select>
         <!--方便触屏-->
-        <el-button icon="el-icon-search" @click.stop="searchEvent" slot="append" />
+        <el-button icon="el-icon-search" @click.stop="searchEvent" slot="append" v-if="!searchRunning"/>
+        <el-button icon="el-icon-loading" @click.stop="stopSearchEvent" slot="append" v-if="searchRunning" title='点击可停止搜索'/>
       </el-autocomplete>
     </div>
-    <div class="toolbar" v-if="!show.find && showToolbar">
-      <el-select v-model="selectedAreas" size="small" multiple collapse-tags placeholder="地区" popper-class="popper" :popper-append-to-body="false" @remove-tag="refreshFilteredList" @visible-change="refreshFilteredList($event)">
+    <div class="toolbar" v-show="showToolbar">
+      <el-select v-model="selectedAreas" size="small" multiple placeholder="地区" popper-class="popper" :popper-append-to-body="false" @remove-tag="refreshFilteredList" @change="refreshFilteredList">
         <el-option
           v-for="item in areas"
           :key="item"
@@ -72,11 +78,13 @@
        <el-input-number size="small" v-model="selectedYears.end" :min=0 :max="new Date().getFullYear()" controls-position="right" step-strictly @change="refreshFilteredList"></el-input-number>
        </span>
     </div>
-    <el-divider content-position="center" v-if="!show.find">
-      <el-button type="text" size="mini" @click='() => { showToolbar = !showToolbar; if (!showToolbar) this.refreshFilteredList() }'>{{ showToolbar ? '隐藏工具栏' : '显示工具栏' }}</el-button>
+    <el-divider class="listpage-header-divider" content-position="right">
+      <el-button type="text" size="mini" @click="toggleViewMode">视图切换</el-button>
+      <el-button type="text" size="mini" @click='() => { showToolbar = !showToolbar; if (!showToolbar) this.refreshFilteredList() }' title="收起工具栏会重置筛选排序">{{ showToolbar ? '隐藏工具栏' : '显示工具栏' }}</el-button>
+      <el-button type="text" size="mini" @click="backTop">回到顶部</el-button>
     </el-divider>
     <div class="listpage-body" id="film-body" infinite-wrapper>
-      <div class="show-picture" v-if="setting.view === 'picture' && !show.find">
+      <div class="show-picture" v-if="setting.view === 'picture' && !showFind">
           <Waterfall ref="filmWaterfall" :list="filteredList" :gutter="20" :width="240"
           :breakpoints="{
             1200: { //当屏幕宽度小于等于1200
@@ -115,10 +123,11 @@
           </Waterfall>
           <infinite-loading force-use-infinite-wrapper :identifier="infiniteId" @infinite="infiniteHandler"></infinite-loading>
       </div>
-      <div class="show-table" v-if="setting.view === 'table' && !show.find">
+      <div class="show-table" v-if="setting.view === 'table' && !showFind">
         <el-table
           size="mini"
           :data="filteredList"
+          ref="filmTable"
           height="100%"
           :empty-text="statusText"
           @row-click="(row) => detailEvent(site, row)"
@@ -127,7 +136,7 @@
             prop="name"
             label="片名">
           </el-table-column>
-          <el-table-column
+          <el-table-column v-if="type.name === '最新'"
             prop="type"
             label="类型"
             width="100">
@@ -148,16 +157,16 @@
             label="语言"
             width="100">
           </el-table-column>
-          <el-table-column
-            prop="note"
-            label="备注"
-            width="120">
-          </el-table-column>
-          <el-table-column
+          <el-table-column v-if="showTableLastColumn"
             prop="last"
             label="最近更新"
             :formatter="dateFormat"
-            align="left">
+            align="left"
+            width="120">
+          </el-table-column>
+          <el-table-column
+            prop="note"
+            label="备注">
           </el-table-column>
           <el-table-column
             label="操作"
@@ -180,10 +189,10 @@
           </infinite-loading>
         </el-table>
       </div>
-      <div class="show-table" v-if="searchViewMode=== 'table' && show.find">
+      <div class="show-table" v-if="setting.searchViewMode === 'table' && showFind">
         <el-table size="mini"
           ref="searchResultTable"
-          :data="searchContents.filter(res => !setting.excludeR18Films || (res.type !== undefined && !containsR18Keywords(res.type)))"
+          :data="filteredSearchContents"
           height="100%"
           :empty-text="statusText"
           @filter-change="filterChange"
@@ -209,36 +218,38 @@
           </el-table-column>
           <el-table-column
             prop="type"
-            :filters="getFilters('type')"
-            :filter-method="(value, row, column) => { this.currentColumn = column; return value === row.type }"
             label="类型"
-            width="90">
+            width="100">
           </el-table-column>
           <el-table-column
               sortable
               prop="year"
               label="上映"
-              width="90">
+              width="100">
           </el-table-column>
           <el-table-column
             prop="area"
-            :filters="getFilters('area')"
-            :filter-method="(value, row, column) => { this.currentColumn = column; return value === row.area }"
             label="地区"
-            width="90">
+            width="100">
           </el-table-column>
           <el-table-column
             :filters="getFilters('lang')"
             :filter-method="(value, row, column) => { this.currentColumn = column; return value === row.lang }"
             prop="lang"
             label="语言"
-            width="70">
+            width="100">
+          </el-table-column>
+          <el-table-column v-if="showTableLastColumn"
+            prop="last"
+            label="最近更新"
+            :formatter="dateFormat"
+            align="left"
+            width="120">
           </el-table-column>
           <el-table-column
             sortable
             prop="note"
-            label="备注"
-            width="120">
+            label="备注">
           </el-table-column>
           <el-table-column
             label="操作"
@@ -254,8 +265,8 @@
           </el-table-column>
         </el-table>
       </div>
-      <div class="show-picture" v-if="searchViewMode === 'picture' && show.find">
-          <Waterfall ref="filmSearchWaterfall" :list="searchContents.filter(res => !setting.excludeR18Films || (res.type !== undefined && !containsR18Keywords(res.type)))" :gutter="20" :width="240"
+      <div class="show-picture" v-if="setting.searchViewMode === 'picture' && showFind">
+          <Waterfall ref="filmSearchWaterfall" :list="filteredSearchContents" :gutter="20" :width="240"
           :breakpoints="{
             1200: { //当屏幕宽度小于等于1200
               rowPerView: 4,
@@ -310,19 +321,18 @@ export default {
   name: 'film',
   data () {
     return {
-      show: {
-        body: false,
-        site: false,
-        class: false,
-        classList: false,
-        find: false
-      },
+      showFind: false,
+      showToolbar: false,
+      showTableLastColumn: false,
       sites: [],
       site: {},
       classList: [],
+      searchClassList: [],
       type: {},
       selectedSiteName: '',
       selectedClassName: '',
+      selectedSearchClassNames: [],
+      totalpagecount: 0,
       pagecount: 0,
       recordcount: 0,
       list: [],
@@ -332,19 +342,21 @@ export default {
       searchList: [],
       searchTxt: '',
       searchContents: [],
+      filteredSearchContents: [],
       currentColumn: '',
       searchGroup: '',
       searchGroups: [],
       // 福利片关键词
       r18KeyWords: ['伦理', '论理', '倫理', '福利', '激情', '理论', '写真', '情色', '美女', '街拍', '赤足', '性感', '里番'],
-      searchViewMode: 'picture',
       filteredList: [],
       areas: [],
       selectedAreas: [],
       sortKeyword: '',
       sortKeywords: ['按片名', '按上映年份', '按更新时间'],
       selectedYears: { start: 0, end: new Date().getFullYear() },
-      showToolbar: false
+      searchRunning: false,
+      siteSearchCount: 0,
+      infiniteHandlerCount: 0
     }
   },
   components: {
@@ -392,8 +404,21 @@ export default {
         this.SET_SETTING(val)
       }
     },
+    DetailCache: {
+      get () {
+        return this.$store.getters.getDetailCache
+      },
+      set (val) {
+        this.SET_DetailCache(val)
+      }
+    },
     filterSettings () {
       return this.$store.getters.getSetting.excludeR18Films // 需要监听的数据
+    },
+    searchSites () {
+      if (this.searchGroup === '站内') return [this.site]
+      if (this.searchGroup === '全站') return this.sites
+      return this.sites.filter(site => site.group === this.searchGroup)
     }
   },
   filters: {
@@ -404,7 +429,11 @@ export default {
   },
   watch: {
     view () {
-      this.changeView()
+      if (this.view === 'Film') {
+        this.getAllSites()
+        if (this.$refs.filmWaterfall) this.$refs.filmWaterfall.resize() // 瀑布插件resize和refresh功能相同，只是延时不同
+        if (this.$refs.filmSearchWaterfall) this.$refs.filmSearchWaterfall.resize()
+      }
     },
     searchTxt () {
       if (this.searchTxt === '清除历史记录...') {
@@ -422,23 +451,57 @@ export default {
         this.refreshFilteredList()
       },
       deep: true
+    },
+    siteSearchCount () {
+      if (this.siteSearchCount === this.searchSites.length) this.searchRunning = false
+    },
+    searchContents: {
+      handler (list) {
+        this.areas = [...new Set(list.map(ele => ele.area))].filter(x => x)
+        this.searchClassList = [...new Set(list.map(ele => ele.type))].filter(x => x)
+        this.refreshFilteredList()
+      },
+      deep: true
+    },
+    selectedAreas: {
+      handler () {
+        this.infiniteHandlerCount = 0
+      },
+      deep: true
+    },
+    selectedYears: {
+      handler () {
+        this.infiniteHandlerCount = 0
+      },
+      deep: true
     }
   },
   methods: {
-    ...mapMutations(['SET_VIEW', 'SET_DETAIL', 'SET_VIDEO', 'SET_SHARE', 'SET_SETTING']),
-    refreshFilteredList (popperVisible) {
-      if (popperVisible === true) return
+    ...mapMutations(['SET_VIEW', 'SET_DETAIL', 'SET_VIDEO', 'SET_SHARE', 'SET_SETTING', 'SET_DetailCache']),
+    backTop () {
+      const viewMode = this.showFind ? this.setting.searchViewMode : this.setting.view
+      if (viewMode === 'picture') {
+        document.getElementById('film-body').scrollTop = 0
+      } else {
+        const table = this.showFind ? this.$refs.searchResultTable : this.$refs.filmTable
+        table.bodyWrapper.scrollTop = 0
+      }
+    },
+    refreshFilteredList () {
       if (!this.showToolbar) {
         this.sortKeyword = ''
         this.selectedAreas = []
+        this.selectedSearchClassNames = []
         this.selectedYears.start = 0
         this.selectedYears.end = new Date().getFullYear()
       }
-      let filteredData = this.list.filter(x => (this.selectedAreas.length === 0) || this.selectedAreas.includes(x.area))
+      let filteredData = this.showFind ? this.searchContents : this.list
+      if (this.showFind) filteredData = filteredData.filter(x => (this.selectedSearchClassNames.length === 0) || this.selectedSearchClassNames.includes(x.type))
+      filteredData = filteredData.filter(x => (this.selectedAreas.length === 0) || this.selectedAreas.includes(x.area))
       filteredData = filteredData.filter(res => !this.setting.excludeR18Films || !this.containsR18Keywords(res.type))
       filteredData = filteredData.filter(res => res.year >= this.selectedYears.start)
       filteredData = filteredData.filter(res => res.year <= this.selectedYears.end)
-      this.selectedClassName = this.type.name + '    ' + filteredData.length + '/' + this.recordcount
+      if (!this.showFind) this.selectedClassName = this.type.name + '    ' + filteredData.length + '/' + this.recordcount
       switch (this.sortKeyword) {
         case '按上映年份':
           filteredData.sort(function (a, b) {
@@ -458,11 +521,22 @@ export default {
         default:
           break
       }
-      this.filteredList = filteredData
+      if (this.showFind) {
+        this.filteredSearchContents = filteredData
+      } else {
+        this.filteredList = filteredData
+      }
     },
-    updateSearchViewMode () {
+    toggleViewMode () {
+      if (this.showFind) {
+        this.setting.searchViewMode = this.setting.searchViewMode === 'picture' ? 'table' : 'picture'
+        setTimeout(() => { if (this.$refs.filmSearchWaterfall) this.$refs.filmSearchWaterfall.refresh() }, 700)
+      } else {
+        this.setting.view = this.setting.view === 'picture' ? 'table' : 'picture'
+      }
       setting.find().then(res => {
-        res.searchViewMode = this.searchViewMode
+        res.searchViewMode = this.setting.searchViewMode
+        res.view = this.setting.view
         setting.update(res)
       })
     },
@@ -477,9 +551,8 @@ export default {
       return date.split(/\s/)[0]
     },
     getFilters (column) {
-      const searchContents = this.searchContents.filter(res => !this.setting.excludeR18Films || (res.type !== undefined && !this.containsR18Keywords(res.type)))
-      if (column === 'siteName') return [...new Set(searchContents.map(row => row.site.name))].map(e => { return { text: e, value: e } }) // 有方法合并这两行吗？
-      return [...new Set(searchContents.map(row => row[column]))].map(e => { return { text: e, value: e } })
+      if (column === 'siteName') return [...new Set(this.filteredSearchContents.map(row => row.site.name))].map(e => { return { text: e, value: e } }) // 有方法合并这两行吗？
+      return [...new Set(this.filteredSearchContents.map(row => row[column]))].map(e => { return { text: e, value: e } })
     },
     filterChange (filters) {
       // 一次只能一列
@@ -487,7 +560,7 @@ export default {
         const otherColumns = this.$refs.searchResultTable.columns.filter(col => col.id !== this.currentColumn.id)
         otherColumns.forEach(col => { col.filterable = false })
       } else {
-        const filterLabels = ['源站', '类型', '地区', '语言']
+        const filterLabels = ['源站', '语言']
         const columns = this.$refs.searchResultTable.columns.filter(col => filterLabels.includes(col.label))
         columns.forEach(col => { col.filterable = true })
       }
@@ -495,17 +568,20 @@ export default {
     siteClick (siteName) {
       this.list = []
       this.site = this.sites.find(x => x.name === siteName)
-      this.searchTxt = ''
-      this.show.find = false
+      if (this.searchGroup === '站内' && this.searchTxt) {
+        this.searchEvent()
+        return
+      } else {
+        this.searchTxt = ''
+      }
+      this.showFind = false
       this.classList = []
       if (FILM_DATA_CACHE[this.site.key]) {
         this.classList = FILM_DATA_CACHE[this.site.key].classList
-        this.show.class = true
         this.classClick(this.type.name)
       } else {
         this.getClass().then(res => {
           this.classList = res
-          this.show.class = true
           // cache classList data
           FILM_DATA_CACHE[this.site.key] = {
             classList: this.classList
@@ -515,20 +591,23 @@ export default {
       }
     },
     classClick (className) {
-      this.show.classList = false
       this.list = []
       this.type = this.classList.find(x => x.name === className)
+      this.infiniteHandlerCount = 0
       if (!this.type) {
         this.type = this.classList[0]
       }
+      if (this.type.name.endsWith('剧')) this.selectedAreas = []
       const cacheKey = this.site.key + '@' + this.type.tid
       if (FILM_DATA_CACHE[cacheKey]) {
+        this.totalpagecount = FILM_DATA_CACHE[cacheKey].totalpagecount
         this.pagecount = FILM_DATA_CACHE[cacheKey].pagecount
         this.recordcount = FILM_DATA_CACHE[cacheKey].recordcount
         this.list = FILM_DATA_CACHE[cacheKey].list
         this.areas = FILM_DATA_CACHE[cacheKey].areas
       } else {
         zy.page(this.site.key, this.type.tid).then(res => {
+          this.totalpagecount = res.pagecount
           this.pagecount = res.pagecount
           this.recordcount = res.recordcount
           this.infiniteId += 1
@@ -567,44 +646,61 @@ export default {
       }
       return this.r18KeyWords.some(v => name.includes(v))
     },
+    toFlipPagecount () {
+      // 似乎需要解析的网站的视频排序和其他m3u8采集站的顺序正好相反
+      if (this.site.jiexiUrl) {
+        return true
+      }
+      return false
+    },
     infiniteHandler ($state) {
       const key = this.site.key
       const typeTid = this.type.tid
-      const page = this.pagecount
+      var page = this.pagecount
+      if (this.toFlipPagecount()) {
+        page = this.totalpagecount - this.pagecount + 1
+      }
       this.statusText = ' '
       if (key === undefined || page < 1 || typeTid === undefined) {
         $state.complete()
         this.statusText = '暂无数据'
         return false
       }
-      zy.list(key, page, typeTid).then(res => {
-        if (res) {
-          this.pagecount -= 1
-          const type = Object.prototype.toString.call(res)
-          if (type === '[object Undefined]') {
-            $state.complete()
+      if (this.showToolbar && this.filteredList.length && this.filteredList.length < 10) {
+        this.infiniteHandlerCount++
+      }
+      const interval = this.setting.view === 'picture' ? 1200 : 300
+      setTimeout(() => {
+        zy.list(key, page, typeTid).then(res => {
+          if (res) {
+            this.pagecount -= 1
+            const type = Object.prototype.toString.call(res)
+            if (type === '[object Undefined]') {
+              $state.complete()
+            }
+            if (type === '[object Array]') {
+              if (!this.toFlipPagecount()) {
+                // zy.list 返回的是按时间从旧到新排列, 我门需要翻转为从新到旧
+                this.list.push(...res.reverse())
+              } else {
+                // 如果是需要解析的视频网站，zy.list已经是按从新到旧排列
+                this.list.push(...res)
+              }
+            }
+            if (type === '[object Object]') {
+              this.list.push(res)
+            }
+            $state.loaded()
+            // 更新缓存数据
+            const cacheKey = this.site.key + '@' + typeTid
+            FILM_DATA_CACHE[cacheKey] = {
+              pagecount: this.pagecount,
+              recordcount: this.recordcount,
+              list: this.list
+            }
           }
-          if (type === '[object Array]') {
-            // zy.list 返回的是按时间从旧到新排列, 我门需要翻转为从新到旧
-            this.list.push(...res.reverse())
-          }
-          if (type === '[object Object]') {
-            this.list.push(res)
-          }
-          $state.loaded()
-          // 数据更新后,刷新页面
-          if (this.setting.view === 'picture' && this.$refs.filmWaterfall) {
-            this.$refs.filmWaterfall.refresh()
-          }
-          // 更新缓存数据
-          const cacheKey = this.site.key + '@' + typeTid
-          FILM_DATA_CACHE[cacheKey] = {
-            pagecount: this.pagecount,
-            recordcount: this.recordcount,
-            list: this.list
-          }
-        }
-      })
+        })
+      }, (this.infiniteHandlerCount <= 1 ? 0 : this.infiniteHandlerCount - 1) * interval)
     },
     detailEvent (site, e) {
       this.detail = {
@@ -621,9 +717,13 @@ export default {
       } else {
         this.video = { key: site.key, info: { id: e.id, name: e.name, index: 0, site: site } }
       }
-      zy.detail(site.key, e.id).then(detailRes => {
-        this.video.detail = detailRes
-      })
+      const cacheKey = this.video.key + '@' + this.video.info.id
+      if (!this.DetailCache[cacheKey]) {
+        zy.detail(e.site, e.ids).then(res => {
+          this.DetailCache[cacheKey] = res
+        })
+      }
+      this.video.detail = this.DetailCache[cacheKey]
       this.view = 'Play'
     },
     async starEvent (site, e) {
@@ -631,17 +731,19 @@ export default {
       if (db) {
         this.$message.info('已存在')
       } else {
-        zy.detail(site.key, e.id).then(detailRes => {
-          const docs = {
-            key: site.key,
-            ids: e.id,
-            site: site,
-            name: e.name,
-            detail: detailRes
-          }
-          star.add(docs).then(res => {
-            this.$message.success('收藏成功')
-          })
+        const cacheKey = site.key + '@' + e.id
+        if (!this.DetailCache[cacheKey]) {
+          this.DetailCache[cacheKey] = await zy.detail(site.key, e.id)
+        }
+        const docs = {
+          key: site.key,
+          ids: e.id,
+          site: site,
+          name: e.name,
+          detail: this.DetailCache[cacheKey]
+        }
+        star.add(docs).then(res => {
+          this.$message.success('收藏成功')
         })
       }
     },
@@ -653,41 +755,12 @@ export default {
       }
     },
     downloadEvent (site, row) {
-      const key = site.key
-      const id = row.id
-      zy.download(key, id).then(res => {
-        if (res && res.m3u8List) {
-          const list = res.m3u8List.split('#')
-          let downloadUrl = ''
-          for (const i of list) {
-            const url = encodeURI(i.split('$')[1])
-            downloadUrl += (url + '\n')
-          }
-          clipboard.writeText(downloadUrl)
-          this.$message.success('『MP4』格式的链接已复制, 快去下载吧!')
-        } else {
-          zy.detail(key, id).then(res => {
-            const list = [...res.m3u8List]
-            let downloadUrl = ''
-            for (const i of list) {
-              const url = encodeURI(i.split('$')[1])
-              downloadUrl += (url + '\n')
-            }
-            clipboard.writeText(downloadUrl)
-            this.$message.success('『M3U8』格式的链接已复制, 快去下载吧!')
-          })
-        }
+      zy.download(site.key, row.id).then(res => {
+        clipboard.writeText(res.downloadUrls)
+        this.$message.success(res.info)
+      }).catch((err) => {
+        this.$message.error(err.info)
       })
-    },
-    changeView () {
-      if (this.view === 'Film') {
-        this.getAllSites()
-        if (this.setting.view === 'picture') {
-          if (this.$refs.filmWaterfall) {
-            this.$refs.filmWaterfall.refresh()
-          }
-        }
-      }
     },
     querySearch (queryString, cb) {
       var searchList = this.searchList.slice(0, -1)
@@ -722,6 +795,9 @@ export default {
         this.searchList.push({ id: this.searchList.length + 1, keywords: '清除历史记录...' })
       })
     },
+    stopSearchEvent () {
+      this.searchRunning = false
+    },
     searchEvent () {
       const wd = this.searchTxt
       if (this.setting.searchGroup !== this.searchGroup) {
@@ -730,64 +806,53 @@ export default {
       }
       if (!wd) return
       this.searchID += 1
-      var searchSites = []
-      if (this.searchGroup === '站内') searchSites.push(this.site)
-      if (this.searchGroup === '全站') searchSites = this.sites
-      if (!searchSites.length) {
-        searchSites = this.sites.filter(site => site.group === this.searchGroup)
-      }
       this.searchContents = []
-      this.show.find = true
-      this.show.class = false
+      this.showFind = true
       this.statusText = ' '
-      if (wd) {
-        searchSites.forEach(site => {
-          const id = this.searchID
-          zy.search(site.key, wd).then(res => {
-            if (id !== this.searchID) return
-            const type = Object.prototype.toString.call(res)
-            if (type === '[object Array]') {
-              res.forEach(element => {
-                zy.detail(site.key, element.id).then(detailRes => {
-                  detailRes.site = site
-                  if (id !== this.searchID) return
-                  this.searchContents.push(detailRes)
-                  this.searchContents.sort(function (a, b) {
-                    return a.site.id - b.site.id
-                  })
-                  this.statusText = '暂无数据'
-                })
-              })
-            }
-            if (type === '[object Object]') {
-              zy.detail(site.key, res.id).then(detailRes => {
+      this.searchRunning = true
+      this.siteSearchCount = 0
+      this.searchSites.forEach(site => {
+        const id = this.searchID
+        zy.search(site.key, wd).then(res => {
+          if (id !== this.searchID || !this.searchRunning) return
+          const type = Object.prototype.toString.call(res)
+          if (type === '[object Array]') {
+            let count = 0
+            res.forEach(element => {
+              zy.detail(site.key, element.id).then(detailRes => {
+                if (id !== this.searchID || !this.searchRunning) return
                 detailRes.site = site
-                if (id !== this.searchID) return
                 this.searchContents.push(detailRes)
                 this.searchContents.sort(function (a, b) {
                   return a.site.id - b.site.id
                 })
-                this.statusText = '暂无数据'
+              }).finally(() => { count++; if (count === res.length) { this.siteSearchCount++; this.statusText = '暂无数据' } })
+            })
+          } else if (type === '[object Object]') {
+            zy.detail(site.key, res.id).then(detailRes => {
+              if (id !== this.searchID || !this.searchRunning) return
+              detailRes.site = site
+              this.searchContents.push(detailRes)
+              this.searchContents.sort(function (a, b) {
+                return a.site.id - b.site.id
               })
-            }
-          })
-        })
-      }
+            }).finally(() => { this.siteSearchCount++; this.statusText = '暂无数据' })
+          } else if (res === undefined) {
+            this.siteSearchCount++
+            this.statusText = '暂无数据'
+            if (this.searchGroup === '站内') this.$message.info('没有查询到数据！')
+          }
+        }).catch(() => { this.siteSearchCount++; if (this.searchGroup === '站内') this.$message.error('本次查询状态异常，未获取到数据！') })
+      })
     },
     searchAndRecord () {
       this.addSearchRecord()
       this.searchEvent()
     },
     searchChangeEvent () {
-      if (this.searchTxt.length >= 1) {
-        this.show.class = false
-      } else {
-        this.show.class = true
+      if (!this.searchTxt.length) {
         this.searchContents = []
-        this.show.find = false
-        if (this.setting.view === 'picture' && this.$refs.filmWaterfall) {
-          this.$refs.filmWaterfall.refresh()
-        }
+        this.showFind = false
       }
     },
     getAllSites () {
@@ -810,28 +875,20 @@ export default {
         this.searchGroup = this.setting.searchGroup
         if (this.searchGroup === undefined) setting.find().then(res => { this.searchGroup = res.searchGroup })
       })
-    },
-    getSearchViewMode () {
-      setting.find().then(res => {
-        this.searchViewMode = res.searchViewMode === undefined ? 'picture' : res.searchViewMode
-      })
     }
   },
   created () {
     this.getAllSites()
     this.getSearchHistory()
-    this.getSearchViewMode()
   },
   mounted () {
-    window.addEventListener('resize', () => {
-      if (this.$refs.filmWaterfall && this.view === 'Film') {
-        this.$refs.filmWaterfall.resize()
-        this.$refs.filmWaterfall.refresh()
-        setTimeout(() => {
-          this.$refs.filmWaterfall.refresh()
-        }, 500)
-      }
-    }, false)
+    addEventListener('resize', () => {
+      setTimeout(() => {
+        this.showTableLastColumn = window.outerWidth >= 1200
+        if (this.$refs.filmWaterfall) this.$refs.filmWaterfall.resize()
+        if (this.$refs.filmSearchWaterfall) this.$refs.filmSearchWaterfall.resize()
+      }, 500)
+    })
   }
 }
 </script>

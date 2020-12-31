@@ -1,20 +1,25 @@
 <template>
   <div class="listpage" id="star">
     <div class="listpage-header" id="star-header">
-        <el-switch v-model="viewMode" active-text="海报" active-value="picture" inactive-text="列表" inactive-value="table" @change="updateViewMode"></el-switch>
-        <el-button @click.stop="exportFavoritesEvent" icon="el-icon-upload2">导出</el-button>
-        <el-button @click.stop="importFavoritesEvent" icon="el-icon-download">导入</el-button>
-        <el-button @click.stop="clearFavoritesEvent" icon="el-icon-delete-solid">清空</el-button>
+        <el-switch v-model="setting.starViewMode" active-text="海报" active-value="picture" inactive-text="列表" inactive-value="table" @change="updateViewMode"></el-switch>
+        <el-button @click.stop="exportFavoritesEvent" icon="el-icon-upload2" title="导出全部，自动添加扩展名">导出</el-button>
+        <el-button @click.stop="importFavoritesEvent" icon="el-icon-download" title="支持同时导入多个文件">导入</el-button>
+        <el-button @click.stop="removeSelectedItems" icon="el-icon-delete-solid">{{ multipleSelection.length === 0 ? "清空" : "删除所选" }}</el-button>
         <el-button @click.stop="updateAllEvent" icon="el-icon-refresh">同步所有收藏</el-button>
     </div>
     <div class="listpage-body" id="star-body">
-      <div class="show-table" id="star-table"  v-show="viewMode === 'table'">
+      <div class="show-table" id="star-table"  v-if="setting.starViewMode === 'table'">
         <el-table size="mini" fit height="100%" row-key="id"
-        ref="starTable"
-        :data="list"
-        :cell-class-name="checkUpdate"
-        @row-click="detailEvent"
-        @sort-change="handleSortChange">
+          ref="starTable"
+          :data="list"
+          :cell-class-name="checkUpdate"
+          @row-click="detailEvent"
+          @sort-change="handleSortChange"
+          @select="selectionCellClick"
+          @selection-change="handleSelectionChange">
+          <el-table-column
+            type="selection">
+          </el-table-column>
           <el-table-column
             sortable
             :sort-method="(a , b) => sortByLocaleCompare(a.name, b.name)"
@@ -78,7 +83,7 @@
           </el-table-column>
         </el-table>
       </div>
-      <div class="show-picture" id="star-picture" v-show="viewMode === 'picture'">
+      <div class="show-picture" id="star-picture" v-if="setting.starViewMode === 'picture'">
         <Waterfall ref="starWaterfall" :list="list" :gutter="20" :width="240"
           :breakpoints="{
             1200: { //当屏幕宽度小于等于1200
@@ -146,8 +151,11 @@ export default {
     return {
       list: [],
       sites: [],
-      viewMode: 'picture',
-      numNoUpdate: 0
+      numNoUpdate: 0,
+      shiftDown: false,
+      selectionBegin: '',
+      selectionEnd: '',
+      multipleSelection: []
     }
   },
   components: {
@@ -185,6 +193,14 @@ export default {
       set (val) {
         this.SET_SHARE(val)
       }
+    },
+    setting: {
+      get () {
+        return this.$store.getters.getSetting
+      },
+      set (val) {
+        this.SET_SETTING(val)
+      }
     }
   },
   watch: {
@@ -192,9 +208,7 @@ export default {
       if (this.view === 'Star') {
         this.getAllsites()
         this.getFavorites()
-        if (this.$refs.starWaterfall) {
-          this.$refs.starWaterfall.refresh()
-        }
+        if (this.setting.starViewMode === 'table') this.showShiftPrompt()
       }
     },
     numNoUpdate () {
@@ -206,12 +220,39 @@ export default {
     }
   },
   methods: {
-    ...mapMutations(['SET_VIEW', 'SET_DETAIL', 'SET_VIDEO', 'SET_SHARE']),
+    ...mapMutations(['SET_VIEW', 'SET_DETAIL', 'SET_VIDEO', 'SET_SHARE', 'SET_SETTING']),
     handleSortChange (column, prop, order) {
       this.updateDatabase()
     },
     sortByLocaleCompare (a, b) {
       return a.localeCompare(b, 'zh')
+    },
+    selectionCellClick (selection, row) { // 同history一样，逆序
+      if (this.shiftDown && this.selectionBegin !== '' && selection.includes(row)) {
+        this.selectionEnd = row.id
+        const start = this.list.findIndex(e => e.id === Math.max(this.selectionBegin, this.selectionEnd))
+        const end = this.list.findIndex(e => e.id === Math.min(this.selectionBegin, this.selectionEnd))
+        const selections = this.list.slice(start, end + 1)
+        this.$nextTick(() => {
+          selections.forEach(e => this.$refs.starTable.toggleRowSelection(e, true))
+        })
+        this.selectionBegin = this.selectionEnd = ''
+        return
+      }
+      if (selection.includes(row)) {
+        this.selectionBegin = row.id
+      } else {
+        this.selectionBegin = ''
+      }
+    },
+    handleSelectionChange (rows) {
+      this.multipleSelection = rows
+    },
+    removeSelectedItems () {
+      if (!this.multipleSelection.length) this.multipleSelection = this.list
+      this.multipleSelection.forEach(e => star.remove(e.id))
+      this.getFavorites()
+      this.updateDatabase()
     },
     detailEvent (e) {
       this.detail = {
@@ -249,7 +290,7 @@ export default {
       this.share = {
         show: true,
         key: e.key,
-        info: e
+        info: e.detail
       }
     },
     checkUpdate ({ row, rowIndex }) {
@@ -299,30 +340,11 @@ export default {
       })
     },
     downloadEvent (e) {
-      const key = e.key
-      const id = e.id
-      zy.download(key, id).then(res => {
-        if (res && res.m3u8List) {
-          const list = res.m3u8List.split('#')
-          let downloadUrl = ''
-          for (const i of list) {
-            const url = encodeURI(i.split('$')[1])
-            downloadUrl += (url + '\n')
-          }
-          clipboard.writeText(downloadUrl)
-          this.$message.success('『MP4』格式的链接已复制, 快去下载吧!')
-        } else {
-          zy.detail(key, id).then(res => {
-            const list = [...res.m3u8List]
-            let downloadUrl = ''
-            for (const i of list) {
-              const url = encodeURI(i.split('$')[1])
-              downloadUrl += (url + '\n')
-            }
-            clipboard.writeText(downloadUrl)
-            this.$message.success('『M3U8』格式的链接已复制, 快去下载吧!')
-          })
-        }
+      zy.download(e.key, e.ids).then(res => {
+        clipboard.writeText(res.downloadUrls)
+        this.$message.success(res.info)
+      }).catch((err) => {
+        this.$message.error(err.info)
       })
     },
     getSiteName (row) {
@@ -359,13 +381,12 @@ export default {
       const str = JSON.stringify(arr, null, 2)
       const options = {
         filters: [
-          { name: 'JSON file', extensions: ['json'] },
-          { name: 'Normal text file', extensions: ['txt'] },
-          { name: 'All types', extensions: ['*'] }
+          { name: 'JSON file', extensions: ['json'] }
         ]
       }
       remote.dialog.showSaveDialog(options).then(result => {
         if (!result.canceled) {
+          if (!result.filePath.endsWith('.json')) result.filePath += '.json'
           fs.writeFileSync(result.filePath, str)
           this.$message.success('导出收藏成功')
         }
@@ -376,9 +397,7 @@ export default {
     importFavoritesEvent () {
       const options = {
         filters: [
-          { name: 'JSON file', extensions: ['json'] },
-          { name: 'Normal text file', extensions: ['txt'] },
-          { name: 'All types', extensions: ['*'] }
+          { name: 'JSON file', extensions: ['json'] }
         ],
         properties: ['openFile', 'multiSelections']
       }
@@ -392,6 +411,16 @@ export default {
             json.reverse().forEach(ele => {
               const starExists = starList.some(x => x.key === ele.key && x.ids === ele.ids)
               if (!starExists) {
+                const newDetail = {
+                  director: ele.director,
+                  actor: ele.actor,
+                  type: ele.type,
+                  area: ele.area,
+                  lang: ele.lang,
+                  year: ele.year,
+                  last: ele.last,
+                  note: ele.note
+                }
                 var doc = {
                   id: id,
                   key: ele.key,
@@ -401,16 +430,7 @@ export default {
                   hasUpdate: ele.hasUpdate,
                   index: ele.index,
                   rate: ele.rate,
-                  detail: ele.detail === undefined ? {
-                    director: ele.director,
-                    actor: ele.actor,
-                    type: ele.type,
-                    area: ele.area,
-                    lang: ele.lang,
-                    year: ele.year,
-                    last: ele.last,
-                    note: ele.note
-                  } : ele.detail
+                  detail: ele.detail === undefined ? newDetail : ele.detail
                 }
                 id += 1
                 starList.push(doc)
@@ -424,11 +444,6 @@ export default {
         }
       }).catch(err => {
         this.$message.error(err)
-      })
-    },
-    clearFavoritesEvent () {
-      star.clear().then(e => {
-        this.getFavorites()
       })
     },
     syncTableData () {
@@ -448,6 +463,7 @@ export default {
       })
     },
     rowDrop () {
+      if (!document.getElementById('star-table')) return
       const tbody = document.getElementById('star-table').querySelector('.el-table__body-wrapper tbody')
       const _this = this
       Sortable.create(tbody, {
@@ -458,33 +474,40 @@ export default {
         }
       })
     },
-    getViewMode () {
-      setting.find().then(res => {
-        this.viewMode = res.starViewMode
-      })
-    },
     updateViewMode () {
+      if (this.setting.starViewMode === 'table') {
+        setTimeout(() => { this.rowDrop() }, 100)
+        this.showShiftPrompt()
+      } else {
+        setTimeout(() => { if (this.$refs.starWaterfall) this.$refs.starWaterfall.refresh() }, 700)
+      }
       setting.find().then(res => {
-        res.starViewMode = this.viewMode
+        res.starViewMode = this.setting.starViewMode
         setting.update(res)
       })
+    },
+    showShiftPrompt () {
+      if (this.setting.shiftTooltipLimitTimes === undefined) this.setting.shiftTooltipLimitTimes = 5
+      if (this.setting.shiftTooltipLimitTimes) {
+        this.$message.info('多选时支持shift快捷键')
+        this.setting.shiftTooltipLimitTimes--
+        setting.find().then(res => {
+          res.shiftTooltipLimitTimes = this.setting.shiftTooltipLimitTimes
+          setting.update(res)
+        })
+      }
     }
   },
   created () {
     this.getFavorites()
-    this.getViewMode()
   },
   mounted () {
-    this.rowDrop()
-    window.addEventListener('resize', () => {
-      if (this.$refs.starWaterfall && this.view === 'Star') {
-        this.$refs.starWaterfall.resize()
-        this.$refs.starWaterfall.refresh()
-        setTimeout(() => {
-          this.$refs.starWaterfall.refresh()
-        }, 500)
-      }
-    }, false)
+    if (this.setting.starViewMode === 'table') setTimeout(() => { this.rowDrop() }, 100)
+    addEventListener('keydown', code => { if (code.keyCode === 16) this.shiftDown = true })
+    addEventListener('keyup', code => { if (code.keyCode === 16) this.shiftDown = false })
+    addEventListener('resize', () => {
+      setTimeout(() => { if (this.$refs.starWaterfall) this.$refs.starWaterfall.resize() }, 500)
+    })
   }
 }
 </script>

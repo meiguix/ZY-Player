@@ -4,16 +4,16 @@
           <el-switch v-model="enableBatchEdit" active-text="批处理分组">></el-switch>
           <el-checkbox v-model="setting.excludeR18Films" @change="excludeR18FilmsChangeEvent">屏蔽福利片</el-checkbox>
           <el-button @click="addSite" icon="el-icon-document-add">新增</el-button>
-          <el-button @click="exportSites" icon="el-icon-upload2" >导出</el-button>
-          <el-button @click="importSites" icon="el-icon-download">导入</el-button>
-          <el-button @click="checkAllSite" icon="el-icon-refresh" :loading="checkAllSitesLoading">检测{{ this.checkAllSitesLoading ? this.checkProgress + '/' + this.sites.length : '' }}</el-button>
+          <el-button @click="exportSites" icon="el-icon-upload2" title="导出全部，自动添加扩展名">导出</el-button>
+          <el-button @click="importSites" icon="el-icon-download" title="支持同时导入多个文件">导入</el-button>
+          <el-button @click="checkAllSite" icon="el-icon-refresh" :loading="checkAllSitesLoading" title="可在后台运行">检测{{ this.checkAllSitesLoading ? this.checkProgress + '/' + this.sites.length : '' }}</el-button>
           <el-button @click="resetSitesEvent" icon="el-icon-refresh-left">重置</el-button>
     </div>
     <div class="listpage-header" v-show="enableBatchEdit">
           <el-switch v-model="enableBatchEdit" active-text="批处理分组"></el-switch>
           <el-input placeholder="新组名" v-model="batchGroupName"></el-input>
           <el-switch v-model="batchIsActive" active-text="启用"></el-switch>
-          <el-button type="primary" icon="el-icon-edit" @click.stop="saveBatchEdit">保存</el-button>
+          <el-button type="primary" icon="el-icon-edit" @click.stop="saveBatchEdit" title="输入框组名为空时仅保存开关状态">保存分组与开关状态</el-button>
           <el-button @click="removeSelectedSites" icon="el-icon-delete-solid">删除</el-button>
     </div>
     <div class="listpage-body" id="sites-body">
@@ -94,6 +94,9 @@
           <el-form-item label="下载接口" prop='download'>
             <el-input v-model="siteInfo.download" :autosize="{ minRows: 2, maxRows: 4}" type="textarea" placeholder="请输入Download接口地址，可以空着"/>
           </el-form-item>
+          <el-form-item label="解析接口" prop='jiexiUrl'>
+            <el-input v-model="siteInfo.jiexiUrl" :autosize="{ minRows: 2, maxRows: 4}" type="textarea" placeholder="请输入解析接口地址，可以空着"/>
+          </el-form-item>
           <el-form-item label="分组" prop='group'>
             <el-select v-model="siteInfo.group" allow-create filterable default-first-option placeholder="请输入分组">
               <el-option v-for="item in siteGroup" :key="item" :label="item" :value="item"></el-option>
@@ -133,6 +136,7 @@ export default {
         name: '',
         api: '',
         download: '',
+        jiexiUrl: '',
         group: '',
         isActive: true
       },
@@ -185,6 +189,17 @@ export default {
       if (this.checkAllSitesLoading) {
         this.$message.info('正在检测, 请勿操作.')
         this.enableBatchEdit = false
+      }
+      if (this.enableBatchEdit) {
+        if (this.setting.shiftTooltipLimitTimes === undefined) this.setting.shiftTooltipLimitTimes = 5
+        if (this.setting.shiftTooltipLimitTimes) {
+          this.$message.info('多选时支持shift快捷键')
+          this.setting.shiftTooltipLimitTimes--
+          setting.find().then(res => {
+            res.shiftTooltipLimitTimes = this.setting.shiftTooltipLimitTimes
+            setting.update(res)
+          })
+        }
       }
     }
   },
@@ -260,6 +275,7 @@ export default {
         name: '',
         api: '',
         download: '',
+        jiexiUrl: '',
         group: '',
         isActive: true
       }
@@ -318,6 +334,7 @@ export default {
         name: this.siteInfo.name,
         api: this.siteInfo.api,
         download: this.siteInfo.download,
+        jiexiUrl: this.siteInfo.jiexiUrl,
         group: this.siteInfo.group,
         isActive: this.siteInfo.isActive
       }
@@ -328,6 +345,7 @@ export default {
           name: '',
           api: '',
           download: '',
+          jiexiUrl: '',
           group: ''
         }
         this.dialogType === 'edit' ? this.$message.success('修改成功！') : this.$message.success('新增源成功！')
@@ -342,13 +360,12 @@ export default {
       const str = JSON.stringify(arr, null, 2)
       const options = {
         filters: [
-          { name: 'JSON file', extensions: ['json'] },
-          { name: 'Normal text file', extensions: ['txt'] },
-          { name: 'All types', extensions: ['*'] }
+          { name: 'JSON file', extensions: ['json'] }
         ]
       }
       remote.dialog.showSaveDialog(options).then(result => {
         if (!result.canceled) {
+          if (!result.filePath.endsWith('.json')) result.filePath += '.json'
           fs.writeFileSync(result.filePath, str)
           this.$message.success('已保存成功')
         }
@@ -363,9 +380,7 @@ export default {
       }
       const options = {
         filters: [
-          { name: 'JSON file', extensions: ['json'] },
-          { name: 'Normal text file', extensions: ['txt'] },
-          { name: 'All types', extensions: ['*'] }
+          { name: 'JSON file', extensions: ['json'] }
         ],
         properties: ['openFile', 'multiSelections']
       }
@@ -462,6 +477,7 @@ export default {
       })
     },
     async checkAllSite () {
+      if (this.checkAllSitesLoading) return
       this.checkAllSitesLoading = true
       this.stopFlag = false
       this.checkProgress = 0
@@ -471,6 +487,7 @@ export default {
       await Promise.all(other.map(site => this.checkSingleSite(site))).then(res => {
         this.checkAllSitesLoading = false
         this.getSites()
+        if (!this.stopFlag) this.$message.success('视频点播源站批量检测已完成！')
       })
     },
     async checkSingleSite (row) {

@@ -1,11 +1,11 @@
 <template>
-  <div class="share" id="share" @click="shareClickEvent" v-on-clickaway="shareClickEvent">
+  <div class="share" id="share" @click="shareClickEvent" v-clickoutside="shareClickEvent">
     <div class="left">
       <img :src="pic" alt="" @load="picLoadEvent">
     </div>
     <div class="right" id="right">
       <div class="title">{{ share.info.name }}</div>
-      <qrcode-vue id="qr" :value="link" :size="160" level="L" />
+      <qrcode-vue v-if="link !== ''" id="qr" :value="link" :size="160" level="L" />
       <div class="tips">
         <p>长按二维码，识别播放。</p>
         <p><img src="@/assets/image/logo.png"></p>
@@ -22,7 +22,7 @@ import { mapMutations } from 'vuex'
 import QrcodeVue from 'qrcode.vue'
 import html2canvas from 'html2canvas'
 import zy from '../lib/site/tools'
-import { directive as onClickaway } from 'vue-clickaway'
+import Clickoutside from 'element-ui/src/utils/clickoutside'
 const { clipboard, nativeImage } = require('electron')
 export default {
   name: 'share',
@@ -45,6 +45,14 @@ export default {
       set (val) {
         this.SET_SHARE(val)
       }
+    },
+    DetailCache: {
+      get () {
+        return this.$store.getters.getDetailCache
+      },
+      set (val) {
+        this.SET_DetailCache(val)
+      }
     }
   },
   watch: {
@@ -58,32 +66,43 @@ export default {
     }
   },
   directives: {
-    onClickaway: onClickaway
+    Clickoutside
   },
   methods: {
-    ...mapMutations(['SET_SHARE']),
+    ...mapMutations(['SET_SHARE', 'SET_DetailCache']),
     shareClickEvent () {
       this.share = {
         show: false,
         info: {}
       }
     },
-    getDetail () {
-      this.loading = true
-      const id = this.share.info.ids || this.share.info.id
-      zy.detail(this.share.key, id).then(res => {
-        if (res) {
-          this.pic = res.pic
-          var m3u8List = res.m3u8List
-          const url = m3u8List[1]
-          this.link = 'http://hunlongyu.gitee.io/zy-player-web?url=' + url + '&name=' + this.share.info.name
+    async getUrl (dl) {
+      const t = dl.dd._t
+      if (t) {
+        return t.split('#')[0].split('$')[1]
+      } else {
+        const id = this.share.info.ids || this.share.info.id
+        const cacheKey = this.share.key + '@' + id
+        let res = this.DetailCache[cacheKey]
+        if (!this.DetailCache[cacheKey]) {
+          res = await zy.detail(this.share.key, id)
+          this.DetailCache[cacheKey] = res
         }
-        this.loading = false
-      })
+        if (res) {
+          return res.m3u8List[1]
+        }
+      }
+    },
+    async getDetail () {
+      this.loading = true
+      this.pic = this.share.info.pic
+      const url = await this.getUrl(this.share.info.dl)
+      this.link = 'http://hunlongyu.gitee.io/zy-player-web?url=' + url + '&name=' + this.share.info.name
+      this.loading = false
     },
     picLoadEvent () {
       const dom = document.getElementById('share')
-      html2canvas(dom, { useCORS: true, allowTaint: true }).then(res => {
+      html2canvas(dom).then(res => {
         const png = res.toDataURL('image/png')
         const p = nativeImage.createFromDataURL(png)
         clipboard.writeImage(p)

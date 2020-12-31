@@ -15,7 +15,8 @@ var session = win.webContents.session
 var ElectronProxyAgent = require('electron-proxy-agent')
 
 // 请求超时时限
-axios.defaults.timeout = 10000 // 可能使用代理，增长超时
+// axios.defaults.timeout = 10000 // 可能使用代理，增长超时
+const TIMEOUT = 6000
 
 // 重试次数，共请求3次
 axios.defaults.retry = 2
@@ -23,11 +24,20 @@ axios.defaults.retry = 2
 // 请求的间隙
 axios.defaults.retryDelay = 1000
 
+// 使用请求拦截器动态调整超时
+axios.interceptors.request.use(function (config) {
+  if (config.__retryCount === undefined) {
+    config.timeout = TIMEOUT
+  } else {
+    config.timeout = TIMEOUT * (config.__retryCount + 1)
+  }
+  return config
+}, function (err) {
+  return Promise.reject(err)
+})
+
 // 添加响应拦截器
 axios.interceptors.response.use(function (response) {
-  // 对响应数据做些事
-  if (response.status && response.status === 200 && response.request.responseURL.includes('api.php') && !response.data.startsWith('<?xml')) {
-  }
   return response
 }, function (err) { // 请求错误时做些事
   // 请求超时的之后，抛出 err.code = ECONNABORTED的错误..错误信息是 timeout of  xxx ms exceeded
@@ -139,7 +149,11 @@ const zy = {
           const json = parser.parse(data, this.xmlConfig)
           const jsondata = json.rss === undefined ? json : json.rss
           const videoList = jsondata.list.video
-          resolve(videoList)
+          if (videoList && videoList.length) {
+            resolve(videoList)
+          } else {
+            resolve([])
+          }
         }).catch(err => {
           reject(err)
         })
@@ -163,7 +177,7 @@ const zy = {
           url = `${site.api}?ac=videolist`
         }
         axios.post(url).then(async res => {
-          const data = res.data
+          const data = res.data.match(/<list [^>]*>/)[0] + '</list>' // 某些源站不含页码时获取到的数据parser无法解析
           const json = parser.parse(data, this.xmlConfig)
           const jsondata = json.rss === undefined ? json : json.rss
           const pg = {
@@ -224,19 +238,36 @@ const zy = {
           const videoList = jsondata.list.video
           // Parse m3u8List
           var m3u8List = []
+          // Parse video lists
+          var fullList = []
           const dd = videoList.dl.dd
           const type = Object.prototype.toString.call(dd)
           if (type === '[object Array]') {
             for (const i of dd) {
+              const ext = Array.from(new Set(...i._t.split('#').map(e => e.split('$')[1].match(/\.\w+?$/))))
+              if (ext.length === 1) i._flag = ext[0].slice(1)
+              fullList.push(
+                {
+                  flag: i._flag,
+                  list: i._t.split('#')
+                }
+              )
               // 如果含有多个视频列表的话, 仅获取m3u8列表
-              if (i._flag.includes('m3u8')) {
+              if (i._flag.includes('m3u8') || i._t.includes('.m3u8')) {
                 m3u8List = i._t.split('#')
               }
             }
           } else {
+            fullList.push(
+              {
+                flag: dd._flag,
+                list: dd._t.split('#')
+              }
+            )
             m3u8List = dd._t.split('#')
           }
           videoList.m3u8List = m3u8List
+          videoList.fullList = fullList
           resolve(videoList)
         }).catch(err => {
           reject(err)
@@ -254,6 +285,8 @@ const zy = {
    */
   download (key, id) {
     return new Promise((resolve, reject) => {
+      let info = ''
+      let downloadUrls = ''
       this.getSite(key).then(res => {
         const site = res
         if (site.download) {
@@ -263,24 +296,42 @@ const zy = {
             const json = parser.parse(data, this.xmlConfig)
             const jsondata = json.rss === undefined ? json : json.rss
             const videoList = jsondata.list.video
-            // Parse m3u8List
-            var m3u8List = []
             const dd = videoList.dl.dd
             const type = Object.prototype.toString.call(dd)
             if (type === '[object Array]') {
               for (const i of dd) {
-                m3u8List = i._t.split('#')
+                downloadUrls = i._t.split('#').map(e => encodeURI(e.split('$')[1])).join('\n')
               }
             } else {
-              m3u8List = dd._t.split('#')
+              downloadUrls = dd._t.split('#').map(e => encodeURI(e.split('$')[1])).join('\n')
             }
-            videoList.m3u8List = m3u8List
-            resolve(videoList)
-          }).catch(err => {
+            if (downloadUrls) {
+              info = '调用下载接口获取到的链接已复制, 快去下载吧!'
+              resolve({ downloadUrls: downloadUrls, info: info })
+            } else {
+              throw new Error()
+            }
+          }).catch((err) => {
+            err.info = '无法获取到下载链接，请通过播放页面点击“调试”按钮获取'
             reject(err)
           })
         } else {
-          resolve([])
+          zy.detail(key, id).then(res => {
+            const list = [...res.m3u8List]
+            for (const i of list) {
+              const url = encodeURI(i.split('$')[1])
+              downloadUrls += (url + '\n')
+            }
+            if (downloadUrls) {
+              info = '视频源链接已复制, 快去下载吧!'
+              resolve({ downloadUrls: downloadUrls, info: info })
+            } else {
+              throw new Error()
+            }
+          }).catch((err) => {
+            err.info = '无法获取到下载链接，请通过播放页面点击“调试”按钮获取'
+            reject(err)
+          })
         }
       })
     })
@@ -328,28 +379,26 @@ const zy = {
   /**
    * 获取豆瓣页面链接
    * @param {*} name 视频名称
+   * @param {*} year 视频年份
    * @returns 豆瓣页面链接，如果没有搜到该视频，返回搜索页面链接
    */
-  doubanLink (name) {
+  doubanLink (name, year) {
     return new Promise((resolve, reject) => {
       // 豆瓣搜索链接
       var nameToSearch = name.replace(/\s/g, '')
       var doubanSearchLink = 'https://www.douban.com/search?q=' + nameToSearch
       axios.get(doubanSearchLink).then(res => {
         const $ = cheerio.load(res.data)
-        // 比较第一和第二给豆瓣搜索结果, 看名字是否相符
+        // 查询所有搜索结果, 看名字和年代是否相符
         var link = ''
-        var linkInDouban = $($('div.result')[0]).find('div>div>h3>a').first()
-        var nameInDouban = linkInDouban.text().replace(/\s/g, '')
-        if (nameToSearch === nameInDouban) {
-          link = linkInDouban.attr('href')
-        } else {
-          linkInDouban = $($('div.result')[1]).find('div>div>h3>a').first()
-          nameInDouban = linkInDouban.text().replace(/\s/g, '')
-          if (nameToSearch === nameInDouban) {
+        $('div.result').each(function () {
+          var linkInDouban = $(this).find('div>div>h3>a').first()
+          var nameInDouban = linkInDouban.text().replace(/\s/g, '')
+          var subjectCast = $(this).find('span.subject-cast').text()
+          if (nameToSearch === nameInDouban && subjectCast && subjectCast.includes(year)) {
             link = linkInDouban.attr('href')
           }
-        }
+        })
         if (link) {
           resolve(link)
         } else {
@@ -364,12 +413,13 @@ const zy = {
   /**
    * 获取豆瓣评分
    * @param {*} name 视频名称
+   * @param {*} year 视频年份
    * @returns 豆瓣评分
    */
-  doubanRate (name) {
+  doubanRate (name, year) {
     return new Promise((resolve, reject) => {
       var nameToSearch = name.replace(/\s/g, '')
-      this.doubanLink(nameToSearch).then(link => {
+      this.doubanLink(nameToSearch, year).then(link => {
         if (link.includes('https://www.douban.com/search')) {
           resolve('暂无评分')
         } else {

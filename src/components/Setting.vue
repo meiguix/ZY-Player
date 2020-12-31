@@ -5,22 +5,10 @@
       <div class="info">
         <a @click="linkOpen('http://zyplayer.fun/')">官网</a>
         <a @click="linkOpen('https://github.com/Hunlongyu/ZY-Player')">Github</a>
-        <a @click="linkOpen('https://github.com/Hunlongyu/ZY-Player/issues')">当前版本v{{pkg.version}} 反馈</a>
-        <a style="color:#38dd77" @click="quitAndInstall()" v-show="latestVersion !== pkg.version" >最新版本v{{latestVersion}}</a>
-      </div>
-      <div class="view">
-        <div class="title">视图</div>
-        <div class="view-box">
-          <div class="zy-select" @mouseleave="show.view = false">
-            <div class="vs-placeholder" @click="show.view = true">默认视图</div>
-            <div class="vs-options" v-show="show.view">
-              <ul class="zy-scroll">
-                <li :class="d.view === 'picture' ? 'active' : ''" @click="changeView('picture')">海报</li>
-                <li :class="d.view === 'table' ? 'active' : ''" @click="changeView('table')">列表</li>
-              </ul>
-            </div>
-          </div>
-        </div>
+        <a @click="linkOpen('https://github.com/Hunlongyu/ZY-Player/releases/tag/v' + pkg.version)">v{{pkg.version}}更新日志</a>
+        <a @click="linkOpen('https://github.com/Hunlongyu/ZY-Player/issues/80')">常见问题</a>
+        <a @click="linkOpen('https://github.com/Hunlongyu/ZY-Player/issues')">反馈建议</a>
+        <a style="color:#38dd77" @click="openUpdate()" v-show="update.find" >最新版本v{{update.version}}</a>
       </div>
       <div class="shortcut">
         <div class="title">快捷键</div>
@@ -39,6 +27,9 @@
           </div>
           <div class="zy-select">
             <div class="vs-placeholder vs-noAfter" @click="impShortcut">导入</div>
+          </div>
+          <div class="zy-select">
+            <div class="vs-placeholder vs-noAfter" @click="resetShortcut">重置</div>
           </div>
         </div>
       </div>
@@ -210,13 +201,29 @@
         </span>
       </el-dialog>
     </div>
+    <div class="update" v-if="update.show">
+      <div class="wrapper">
+        <div class="body">
+          <div class="content" v-html="update.html"></div>
+          <div class="progress" v-show="update.percent > 0">
+            <el-progress :percentage="update.percent"></el-progress>
+            <div class="size" style="font-size: 14px">更新包大小: {{update.size}} KB</div>
+          </div>
+        </div>
+        <div class="footer">
+          <el-button size="small" @click="cancelUpdate">取消</el-button>
+          <el-button size="small" v-show="!update.downloaded" @click="startUpdate">更新</el-button>
+          <el-button size="small" v-show="update.downloaded" @click="installUpdate">安装</el-button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 <script>
 import { mapMutations } from 'vuex'
 import pkg from '../../package.json'
 import { setting, sites, shortcut } from '../lib/dexie'
-import { sites as defaultSites } from '../lib/dexie/initData'
+import { sites as defaultSites, localKey as defaultShortcuts } from '../lib/dexie/initData'
 import { shell, clipboard, remote, ipcRenderer } from 'electron'
 import db from '../lib/dexie/dexie'
 import zy from '../lib/site/tools'
@@ -245,6 +252,15 @@ export default {
         scheme: '',
         url: '',
         port: ''
+      },
+      update: {
+        find: false,
+        version: '',
+        show: false,
+        html: '',
+        percent: 0,
+        size: 0,
+        downloaded: false
       }
     }
   },
@@ -289,11 +305,6 @@ export default {
       shortcut.all().then(res => {
         this.shortcutList = res
       })
-    },
-    changeView (e) {
-      this.d.view = e
-      this.updateSettingEvent()
-      this.show.view = false
     },
     async clearCache () {
       const win = remote.getCurrentWindow()
@@ -416,8 +427,18 @@ export default {
         this.$message.info('已清空原数据')
         shortcut.add(json).then(e => {
           this.$message.success('已添加成功')
-          this.getSites()
+          this.getShortcut()
+          this.d.shortcutModified = true
+          this.updateSettingEvent()
         })
+      })
+    },
+    resetShortcut () {
+      shortcut.clear().then(shortcut.add(defaultShortcuts)).then(res => {
+        this.getShortcut()
+        this.$message.success('快捷键已重置')
+        this.d.shortcutModified = true
+        this.updateSettingEvent()
       })
     },
     async changeProxyType (e) {
@@ -466,20 +487,31 @@ export default {
         return false
       }
     },
-    getLatestVersion () {
+    checkUpdate () {
       ipcRenderer.send('checkForUpdate')
       ipcRenderer.on('update-available', (e, info) => {
-        this.latestVersion = info.version
-      })
-      ipcRenderer.on('update-error', () => {
-        this.$message.warning = '更新出错.'
-      })
-      ipcRenderer.on('update-downloaded', () => {
-        this.$message.info = '下载完毕, 退出安装'
+        this.update.find = true
+        this.update.version = info.version
+        this.update.html = info.releaseNotes
       })
     },
-    quitAndInstall () {
-      this.$message.success('已开始下载更新，下载完毕后，将自动退出安装。')
+    openUpdate () {
+      this.update.show = true
+    },
+    cancelUpdate () {
+      this.update.show = false
+    },
+    startUpdate () {
+      ipcRenderer.send('downloadUpdate')
+      ipcRenderer.on('download-progress', (info, progress) => {
+        this.update.size = progress.total
+        this.update.percent = parseFloat(progress.percent).toFixed(1)
+      })
+      ipcRenderer.on('update-downloaded', () => {
+        this.update.downloaded = true
+      })
+    },
+    installUpdate () {
       ipcRenderer.send('quitAndInstall')
     },
     createContextMenu () {
@@ -498,7 +530,7 @@ export default {
     this.getSites()
     this.getSetting()
     this.getShortcut()
-    this.getLatestVersion()
+    this.checkUpdate()
     this.createContextMenu()
   }
 }
@@ -534,17 +566,6 @@ export default {
       margin: 0 10px;
       font-size: 14px;
       cursor: pointer;
-    }
-  }
-  .view{
-    width: 100%;
-    padding: 20px;
-    margin-top: 20px;
-    .view-box{
-      margin-top: 10px;
-      .zy-select{
-        margin-right: 20px;
-      }
     }
   }
   .site{
@@ -640,6 +661,29 @@ export default {
     margin: 20px;
     font-size: 12px;
     color: #ff000066;
+  }
+  .update{
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(7, 17, 27, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    .wrapper{
+      background-color: #fff;
+      padding: 20px 50px 40px;
+      border-radius: 4px;
+      max-width: 500px;
+      max-height: 90%;
+      overflow: auto;
+      .footer{
+        display: flex;
+        justify-content: flex-end;
+      }
+    }
   }
 }
 </style>

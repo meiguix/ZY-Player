@@ -2,17 +2,17 @@
   <div class="listpage" id="iptv">
     <div class="listpage-header" id="iptv-header" v-show="!enableBatchEdit">
         <el-switch v-model="enableBatchEdit" active-text="批处理及频道调整"></el-switch>
-        <el-button @click.stop="exportChannels" icon="el-icon-upload2" >导出</el-button>
-        <el-button @click.stop="importChannels" icon="el-icon-download">导入</el-button>
-        <el-button @click="checkAllChannels" icon="el-icon-refresh" :loading="checkAllChannelsLoading">检测{{ this.checkAllChannelsLoading ? this.checkProgress + '/' + this.iptvList.length : '' }}</el-button>
+        <el-button @click.stop="exportChannels" icon="el-icon-upload2" title="导出m3u时必须手动添加扩展名，要保存频道配置信息请选择json格式">导出</el-button>
+        <el-button @click.stop="importChannels" icon="el-icon-download" title='支持同时导入多个文件,导入m3u时网址可带参数、含有"#"号时自动分割'>导入</el-button>
+        <el-button @click="checkAllChannels" icon="el-icon-refresh" :loading="checkAllChannelsLoading" title="可在后台运行">检测{{ this.checkAllChannelsLoading ? this.checkProgress + '/' + this.iptvList.length : '' }}</el-button>
         <el-button @click.stop="resetChannelsEvent" icon="el-icon-refresh-left">重置</el-button>
     </div>
     <div class="listpage-header" id="iptv-header" v-show="enableBatchEdit">
         <el-switch v-model="enableBatchEdit" active-text="批处理及频道调整"></el-switch>
         <el-input placeholder="新组名/新频道名" v-model="inputContent"></el-input>
         <el-switch v-model="batchIsActive" active-text="启用"></el-switch>
-        <el-button type="primary" icon="el-icon-edit" @click.stop="saveBatchEdit">保存分组与开关状态</el-button>
-        <el-button type="primary" icon="el-icon-film" @click.stop="mergeChannel">{{ this.multipleSelection.length === 1 ? '频道重命名' : '频道合并' }}</el-button>
+        <el-button type="primary" icon="el-icon-edit" @click.stop="saveBatchEdit" title="输入框组名为空时仅保存开关状态">保存分组与开关状态</el-button>
+        <el-button type="primary" icon="el-icon-film" @click.stop="mergeChannel" title="勾选单个时可重命名频道">{{ this.multipleSelection.length === 1 ? '频道重命名' : '频道合并' }}</el-button>
         <el-button @click.stop="removeSelectedChannels" icon="el-icon-delete-solid">删除</el-button>
     </div>
     <div class="listpage-body" id="iptv-table">
@@ -107,7 +107,7 @@
 </template>
 <script>
 import { mapMutations } from 'vuex'
-import { iptv, channelList } from '../lib/dexie'
+import { iptv, channelList, setting } from '../lib/dexie'
 import { iptv as defaultChannels } from '../lib/dexie/initData'
 import zy from '../lib/site/tools'
 import { remote } from 'electron'
@@ -143,8 +143,13 @@ export default {
         this.SET_VIEW(val)
       }
     },
-    setting () {
-      return this.$store.getters.getSetting
+    setting: {
+      get () {
+        return this.$store.getters.getSetting
+      },
+      set (val) {
+        this.SET_SETTING(val)
+      }
     },
     video: {
       get () {
@@ -175,11 +180,6 @@ export default {
     }
   },
   watch: {
-    view () {
-      if (this.view === 'IPTV' && !this.checkAllChannelsLoading) {
-        this.getChannelList()
-      }
-    },
     enableBatchEdit () {
       if (this.checkAllChannelsLoading) {
         this.$message.info('正在检测, 请勿操作.')
@@ -187,6 +187,15 @@ export default {
         return
       }
       if (this.enableBatchEdit) {
+        if (this.setting.shiftTooltipLimitTimes === undefined) this.setting.shiftTooltipLimitTimes = 5
+        if (this.setting.shiftTooltipLimitTimes) {
+          this.$message.info('多选时支持shift快捷键')
+          this.setting.shiftTooltipLimitTimes--
+          setting.find().then(res => {
+            res.shiftTooltipLimitTimes = this.setting.shiftTooltipLimitTimes
+            setting.update(res)
+          })
+        }
         this.$nextTick(() => {
           this.expandedRows.forEach(e => this.$refs.iptvTable.toggleRowExpansion(e, false))
         })
@@ -197,7 +206,7 @@ export default {
     }
   },
   methods: {
-    ...mapMutations(['SET_VIEW', 'SET_DETAIL', 'SET_VIDEO', 'SET_SHARE']),
+    ...mapMutations(['SET_VIEW', 'SET_DETAIL', 'SET_VIDEO', 'SET_SHARE', 'SET_SETTING']),
     sortByLocaleCompare (a, b) {
       return a.localeCompare(b, 'zh')
     },
@@ -318,6 +327,7 @@ export default {
             fs.writeFileSync(result.filePath, writer.toString())
             this.$message.success('已保存成功')
           } else {
+            if (!result.filePath.endsWith('.json')) result.filePath += '.json'
             const arr = [...this.channelList] // 要保存channelList必须选json
             const str = JSON.stringify(arr, null, 2)
             fs.writeFileSync(result.filePath, str)
@@ -550,6 +560,7 @@ export default {
       }
     },
     async checkAllChannels () {
+      if (this.checkAllChannelsLoading) return
       this.checkAllChannelsLoading = true
       this.stopFlag = false
       this.checkProgress = 0
@@ -560,6 +571,7 @@ export default {
       await this.checkChannelsBySite(other).then(res => {
         this.checkAllChannelsLoading = false
         this.getChannelList()
+        if (!this.stopFlag) this.$message.success('直播频道批量检测已完成！')
       })
     },
     async checkChannelsBySite (channels) {

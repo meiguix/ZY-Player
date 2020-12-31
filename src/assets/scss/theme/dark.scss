@@ -131,6 +131,12 @@
                 border-color: var(--d-c-8);
               }
             }
+            .selected {
+              background-color: var(--d-c-5);
+              &:hover{
+                background-color: var(--d-c-5);
+              }
+            }
           }
         }
       }
@@ -139,6 +145,12 @@
   .play{
     background-color: var(--d-bgc-1);
     box-shadow: var(--d-bsc);
+    .el-switch__label {
+      color: var(--d-fc-2)
+    }
+    .el-switch__label.is-active {
+      color: #409EFF
+    }
     .el-input{
       input{
         background-color: var(--d-bgc-1);
@@ -319,12 +331,31 @@
   // Page of list using table and picture
   .listpage{
     color: var(--d-fc-2);
+    .listpage-header-divider{
+      background-color: var(--d-bgc-1);
+      .el-divider__text {
+        background-color: var(--d-bgc-2);
+      }
+      .el-button{
+        background-color: var(--d-bgc-2);
+        color: var(--d-fc-2);
+        &:hover{
+          color: var(--d-fc-3)
+        }
+      }
+    }
     .listpage-header, .toolbar{
       border-bottom-color: var(--d-c-3);
       .btn{
         &:hover{
           color: var(--d-fc-3)
         }
+      }
+      .el-switch__label {
+        color: var(--d-fc-2)
+      }
+      .el-switch__label.is-active {
+        color: #409EFF
       }
       .el-button{
         background-color: var(--d-bgc-2);
