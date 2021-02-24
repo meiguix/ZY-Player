@@ -1,7 +1,7 @@
 <template>
   <div class="share" id="share" @click="shareClickEvent" v-clickoutside="shareClickEvent">
     <div class="left">
-      <img :src="pic" alt="" @load="picLoadEvent">
+      <img :src="share.info.pic" alt="">
     </div>
     <div class="right" id="right">
       <div class="title">{{ share.info.name }}</div>
@@ -76,37 +76,33 @@ export default {
         info: {}
       }
     },
-    async getUrl (dl) {
-      const t = dl.dd._t
-      if (t) {
-        return t.split('#')[0].split('$')[1]
-      } else {
-        const id = this.share.info.ids || this.share.info.id
-        const cacheKey = this.share.key + '@' + id
-        let res = this.DetailCache[cacheKey]
-        if (!this.DetailCache[cacheKey]) {
-          res = await zy.detail(this.share.key, id)
-          this.DetailCache[cacheKey] = res
-        }
-        if (res) {
-          return res.m3u8List[1]
-        }
+    async getUrl (index) {
+      const id = this.share.info.ids || this.share.info.id
+      const cacheKey = this.share.key + '@' + id
+      let res = this.DetailCache[cacheKey]
+      if (!this.DetailCache[cacheKey]) {
+        res = await zy.detail(this.share.key, id)
+        this.DetailCache[cacheKey] = res
+      }
+      if (res) {
+        const url = res.fullList[0].list[index]
+        return url.includes('$') ? url.split('$')[1] : url
       }
     },
     async getDetail () {
       this.loading = true
-      this.pic = this.share.info.pic
-      const url = await this.getUrl(this.share.info.dl)
+      const index = this.share.index || 0
+      const url = await this.getUrl(index)
       this.link = 'http://hunlongyu.gitee.io/zy-player-web?url=' + url + '&name=' + this.share.info.name
       this.loading = false
-    },
-    picLoadEvent () {
-      const dom = document.getElementById('share')
-      html2canvas(dom).then(res => {
-        const png = res.toDataURL('image/png')
-        const p = nativeImage.createFromDataURL(png)
-        clipboard.writeImage(p)
-        this.$message.success('已复制到剪贴板，快去分享吧~ 严禁传播违法资源!!!')
+      this.$nextTick(() => {
+        const dom = document.getElementById('share')
+        html2canvas(dom, { useCORS: true }).then(res => {
+          const png = res.toDataURL('image/png')
+          const p = nativeImage.createFromDataURL(png)
+          clipboard.writeImage(p)
+          this.$message.success('已复制到剪贴板，快去分享吧~ 严禁传播违法资源!!!')
+        })
       })
     }
   },

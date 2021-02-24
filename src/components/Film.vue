@@ -457,6 +457,7 @@ export default {
     },
     searchContents: {
       handler (list) {
+        list = list.filter(res => !this.setting.excludeR18Films || !this.containsR18Keywords(res.type))
         this.areas = [...new Set(list.map(ele => ele.area))].filter(x => x)
         this.searchClassList = [...new Set(list.map(ele => ele.type))].filter(x => x)
         this.refreshFilteredList()
@@ -544,7 +545,7 @@ export default {
       return a.localeCompare(b, 'zh')
     },
     dateFormat (row, column) {
-      var date = row[column.property]
+      const date = row[column.property]
       if (date === undefined) {
         return ''
       }
@@ -620,7 +621,7 @@ export default {
         // 屏蔽主分类
         const classToHide = ['电影', '电影片', '电视剧', '连续剧', '综艺', '动漫']
         zy.class(key).then(res => {
-          var allClass = [{ name: '最新', tid: 0 }]
+          const allClass = [{ name: '最新', tid: 0 }]
           res.class.forEach(element => {
             if (!this.setting.excludeRootClasses || !classToHide.includes(element.name)) {
               if (this.setting.excludeR18Films) {
@@ -640,7 +641,7 @@ export default {
       })
     },
     containsR18Keywords (name) {
-      var containKeyWord = false
+      const containKeyWord = false
       if (!name) {
         return containKeyWord
       }
@@ -656,12 +657,12 @@ export default {
     infiniteHandler ($state) {
       const key = this.site.key
       const typeTid = this.type.tid
-      var page = this.pagecount
+      let page = this.pagecount
       if (this.toFlipPagecount()) {
         page = this.totalpagecount - this.pagecount + 1
       }
       this.statusText = ' '
-      if (key === undefined || page < 1 || typeTid === undefined) {
+      if (key === undefined || page < 1 || page > this.totalpagecount || typeTid === undefined) {
         $state.complete()
         this.statusText = '暂无数据'
         return false
@@ -675,10 +676,9 @@ export default {
           if (res) {
             this.pagecount -= 1
             const type = Object.prototype.toString.call(res)
-            if (type === '[object Undefined]') {
-              $state.complete()
-            }
             if (type === '[object Array]') {
+              // 过滤掉无链接的项
+              res = res.filter(e => e.dl.dd && (e.dl.dd._t || (Object.prototype.toString.call(e.dl.dd) === '[object Array]' && e.dl.dd.some(i => i._t))))
               if (!this.toFlipPagecount()) {
                 // zy.list 返回的是按时间从旧到新排列, 我门需要翻转为从新到旧
                 this.list.push(...res.reverse())
@@ -686,9 +686,10 @@ export default {
                 // 如果是需要解析的视频网站，zy.list已经是按从新到旧排列
                 this.list.push(...res)
               }
-            }
-            if (type === '[object Object]') {
-              this.list.push(res)
+            } else if (type === '[object Object]') {
+              if (res.dl.dd && (res.dl.dd._t || (Object.prototype.toString.call(res.dl.dd) === '[object Array]' && res.dl.dd.some(e => e._t)))) {
+                this.list.push(res)
+              }
             }
             $state.loaded()
             // 更新缓存数据
@@ -717,13 +718,6 @@ export default {
       } else {
         this.video = { key: site.key, info: { id: e.id, name: e.name, index: 0, site: site } }
       }
-      const cacheKey = this.video.key + '@' + this.video.info.id
-      if (!this.DetailCache[cacheKey]) {
-        zy.detail(e.site, e.ids).then(res => {
-          this.DetailCache[cacheKey] = res
-        })
-      }
-      this.video.detail = this.DetailCache[cacheKey]
       this.view = 'Play'
     },
     async starEvent (site, e) {
@@ -754,8 +748,11 @@ export default {
         info: e
       }
     },
-    downloadEvent (site, row) {
-      zy.download(site.key, row.id).then(res => {
+    async downloadEvent (site, row) {
+      const db = await history.find({ site: site.key, ids: row.id })
+      let videoFlag
+      if (db) videoFlag = db.videoFlag
+      zy.download(site.key, row.id, videoFlag).then(res => {
         clipboard.writeText(res.downloadUrls)
         this.$message.success(res.info)
       }).catch((err) => {
@@ -763,8 +760,8 @@ export default {
       })
     },
     querySearch (queryString, cb) {
-      var searchList = this.searchList.slice(0, -1)
-      var results = queryString ? searchList.filter(this.createFilter(queryString)) : this.searchList
+      const searchList = this.searchList.slice(0, -1)
+      const results = queryString ? searchList.filter(this.createFilter(queryString)) : this.searchList
       // 调用 callback 返回建议列表的数据
       cb(results)
     },
@@ -822,20 +819,24 @@ export default {
               zy.detail(site.key, element.id).then(detailRes => {
                 if (id !== this.searchID || !this.searchRunning) return
                 detailRes.site = site
-                this.searchContents.push(detailRes)
-                this.searchContents.sort(function (a, b) {
-                  return a.site.id - b.site.id
-                })
+                if (this.isValidSearchResult(detailRes)) {
+                  this.searchContents.push(detailRes)
+                  this.searchContents.sort(function (a, b) {
+                    return a.site.id - b.site.id
+                  })
+                }
               }).finally(() => { count++; if (count === res.length) { this.siteSearchCount++; this.statusText = '暂无数据' } })
             })
           } else if (type === '[object Object]') {
             zy.detail(site.key, res.id).then(detailRes => {
               if (id !== this.searchID || !this.searchRunning) return
               detailRes.site = site
-              this.searchContents.push(detailRes)
-              this.searchContents.sort(function (a, b) {
-                return a.site.id - b.site.id
-              })
+              if (this.isValidSearchResult(detailRes)) {
+                this.searchContents.push(detailRes)
+                this.searchContents.sort(function (a, b) {
+                  return a.site.id - b.site.id
+                })
+              }
             }).finally(() => { this.siteSearchCount++; this.statusText = '暂无数据' })
           } else if (res === undefined) {
             this.siteSearchCount++
@@ -844,6 +845,10 @@ export default {
           }
         }).catch(() => { this.siteSearchCount++; if (this.searchGroup === '站内') this.$message.error('本次查询状态异常，未获取到数据！') })
       })
+    },
+    isValidSearchResult (detailRes) {
+      return detailRes.dl.dd && (detailRes.dl.dd._t || (Object.prototype.toString.call(detailRes.dl.dd) === '[object Array]' &&
+             detailRes.dl.dd.some(i => i._t)))
     },
     searchAndRecord () {
       this.addSearchRecord()

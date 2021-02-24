@@ -3,6 +3,12 @@
     <div class="box">
       <div class="title">
         <span v-if="this.right.list.length > 1">『第 {{(video.info.index + 1)}} 集』</span>{{name}}
+        <span class="right" @click="() => { onlineUrl = ''; videoStop(); }">
+          <svg role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-labelledby="closeIconTitle">
+            <title id="closeIconTitle">关闭</title>
+            <path d="M6.34314575 6.34314575L17.6568542 17.6568542M6.34314575 17.6568542L17.6568542 6.34314575"></path>
+          </svg>
+        </span>
       </div>
       <div class="player" v-show="!onlineUrl">
         <div id="xgplayer"></div>
@@ -59,13 +65,13 @@
             <path d="M5 2h14a3 3 0 0 1 3 3v17H2V5a3 3 0 0 1 3-3z"></path>
           </svg>
         </span>
-        <span class="zy-svg" @click="miniEvent" v-show="right.list.length > 0">
+        <span class="zy-svg" @click="miniEvent" v-show="!onlineUrl && right.list.length > 0">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-labelledby="diamondIconTitle">
             <title id="diamondIconTitle">精简模式</title>
             <path d="M12 20L3 11M12 20L21 11M12 20L8 11M12 20L16 11M3 11L7 5M3 11H8M7 5L8 11M7 5H12M17 5L21 11M17 5L16 11M17 5H12M21 11H16M8 11H16M8 11L12 5M16 11L12 5"></path>
           </svg>
         </span>
-        <span class="zy-svg" @click="playWithExternalPalyerEvent" v-show="right.list.length > 0">
+        <span class="zy-svg" @click="playWithExternalPalyerEvent" v-show="!onlineUrl && right.list.length > 0">
           <svg role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-labelledby="tvIconTitle">
             <title id="tvIconTitle" >使用第三方播放器</title>
             <polygon points="20 8 20 20 4 20 4 8"></polygon>
@@ -89,7 +95,7 @@
             <rect x="17" y="6" width="1" height="1"></rect>
           </svg>
         </span>
-        <span class="zy-svg" @click="showShortcutEvent" :class="right.type === 'shortcut' ? 'active' : ''" v-show="right.list.length > 0">
+        <span class="zy-svg" @click="showShortcutEvent" :class="right.type === 'shortcut' ? 'active' : ''" v-show="!onlineUrl && right.list.length > 0">
           <svg role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-labelledby="sendIconTitle">
             <title id="sendIconTitle">快捷键指南</title>
             <polygon points="21.368 12.001 3 21.609 3 14 11 12 3 9.794 3 2.394"></polygon>
@@ -251,11 +257,11 @@ import FlvJsPlayer from 'xgplayer-flv.js'
 import mt from 'mousetrap'
 import Clickoutside from 'element-ui/src/utils/clickoutside'
 import { exec, execFile } from 'child_process'
+import PinyinMatch from 'pinyin-match'
 
 const { remote, clipboard } = require('electron')
 const win = remote.getCurrentWindow()
-const PinyinMatch = require('pinyin-match')
-
+const URL = require('url')
 const VIDEO_DETAIL_CACHE = {}
 
 const addPlayerBtn = function (event, svg, attrs) {
@@ -366,7 +372,8 @@ export default {
       currentShortcutList: [],
       onlineUrl: '',
       playerType: 'hls',
-      exportablePlaylist: false
+      exportablePlaylist: false,
+      changingIPTV: false
     }
   },
   filters: {
@@ -453,6 +460,7 @@ export default {
     },
     video: {
       handler () {
+        if (this.changingIPTV) return
         this.getUrls()
       },
       deep: true
@@ -538,7 +546,7 @@ export default {
         const index = this.video.info.index || 0
         const db = await history.find({ site: this.video.key, ids: this.video.info.id })
         const key = this.video.key + '@' + this.video.info.id
-        var time = this.video.info.time
+        let time = this.video.info.time
         this.xg.removeAllProgressDot()
         this.startPosition = { min: '00', sec: '00' }
         this.endPosition = { min: '00', sec: '00' }
@@ -547,6 +555,7 @@ export default {
             time = db.time
           }
           if (!VIDEO_DETAIL_CACHE[key]) VIDEO_DETAIL_CACHE[key] = {}
+          if (!this.video.info.videoFlag) this.video.info.videoFlag = db.videoFlag
           if (db.startPosition) { // 数据库保存的时长通过快捷键设置时可能为小数, this.startPosition为object对应输入框分秒转化到数据库后肯定为整数
             VIDEO_DETAIL_CACHE[key].startPosition = db.startPosition
             this.startPosition = { min: '' + parseInt(db.startPosition / 60), sec: '' + parseInt(db.startPosition % 60) }
@@ -571,19 +580,12 @@ export default {
     },
     playChannel (channel) {
       this.isLive = true
-      if (this.playerType !== 'hls') {
-        this.xg.src = ''
-        this.config.url = ''
-        this.xg.destroy()
-        this.xg = null
-        this.xg = new HlsJsPlayer(this.config)
-        this.playerInstall()
-        this.bindEvent()
-        this.playerType = 'hls'
-      }
       if (channel.channels) {
+        let prefer
         this.right.sources = channel.channels.filter(e => e.isActive)
-        channel = channel.prefer ? channel.channels.find(e => e.id === channel.prefer) : channel.channels.filter(e => e.isActive)[0]
+        if (channel.prefer) prefer = channel.channels.find(e => e.id === channel.prefer)
+        if (!prefer) prefer = channel.channels.filter(e => e.isActive)[0]
+        channel = prefer
       } else {
         const ele = this.channelList.find(e => e.id === channel.channelID)
         ele.prefer = channel.id
@@ -591,17 +593,34 @@ export default {
         channelList.add(ele)
         this.right.sources = ele.channels.filter(e => e.isActive)
       }
+      this.changingIPTV = true // 避免二次执行playChannel
       this.video.iptv = channel
       this.name = channel.name
+      const supportFormats = /\.(m3u8|flv)$/
+      const extRE = channel.url.match(supportFormats) || new URL.URL(channel.url).pathname.match(supportFormats)
+      this.getPlayer(extRE[1])
+      if (extRE[1] === 'flv') this.xg.config.isLive = true
       this.xg.src = channel.url
       this.xg.play()
-      document.querySelector('xg-btn-showhistory').style.display = 'none'
-      document.querySelector('.xgplayer-playbackrate').style.display = 'none'
+      this.changingIPTV = false
+      setTimeout(() => {
+        if (!document.getElementById('xgplayer').querySelector('video')) {
+          this.getPlayer(this.playerType, true)
+          this.playChannel(channel)
+        }
+      }, 1000)
+      if (document.querySelector('xg-btn-showhistory')) document.querySelector('xg-btn-showhistory').style.display = 'none'
+      if (document.querySelector('.xgplayer-playbackrate')) document.querySelector('.xgplayer-playbackrate').style.display = 'none'
     },
-    getPlayer (playerType) {
-      this.xg.src = ''
-      this.config.url = ''
-      this.xg.destroy()
+    async getPlayer (playerType, force = false) {
+      if (!force && this.playerType === playerType) return
+      if (this.playerType !== 'flv') {
+        this.xg.src = '' // https://developers.google.com/web/updates/2017/06/play-request-was-interrupted#danger-zone
+        this.config.url = ''
+      }
+      try {
+        if (this.xg) this.xg.destroy()
+      } catch (err) { }
       this.xg = null
       switch (playerType) {
         case 'mp4':
@@ -616,42 +635,45 @@ export default {
       this.playerInstall()
       this.bindEvent()
       this.playerType = playerType
+      if (this.miniMode) { await this.saveMiniWindowState(); this.miniEvent() }
     },
     playVideo (index = 0, time = 0) {
       this.isLive = false
       this.exportablePlaylist = false
       this.fetchPlaylist().then(async (fullList) => {
-        var playlist = fullList[0].list
+        let playlist = fullList[0].list // ZY支持的已移到首位
         // 如果设定了特定的video flag, 获取该flag下的视频列表
         const videoFlag = this.video.info.videoFlag
         if (videoFlag) {
           playlist = fullList.find(x => x.flag === videoFlag).list
-        } else if (fullList.length > 1 && fullList.find(x => x.flag === 'm3u8' || x.flag === 'mp4')) {
-          playlist = fullList.find(x => x.flag === 'm3u8' || x.flag === 'mp4').list // 播放器支持的格式优先
         }
         this.right.list = playlist
-        var url = playlist[index].split('$')[1]
-        if (playlist.every(e => e.split('$')[1].endsWith('.m3u8'))) this.exportablePlaylist = true
+        const url = playlist[index].includes('$') ? playlist[index].split('$')[1] : playlist[index]
+        if (playlist.every(e => e.includes('$') ? e.split('$')[1].endsWith('.m3u8') : e.endsWith('.m3u8'))) this.exportablePlaylist = true
         if (!url.endsWith('.m3u8') && !url.endsWith('.mp4')) {
           const currentSite = await sites.find({ key: this.video.key })
           this.$message.info('即将调用解析接口播放，请等待...')
           if (currentSite.jiexiUrl) {
-            this.onlineUrl = currentSite.jiexiUrl + url
+            this.onlineUrl = /^\s*(default|默认)\s*$/i.test(currentSite.jiexiUrl) ? this.setting.defaultParseURL + url : currentSite.jiexiUrl + url
           } else {
-            this.onlineUrl = 'https://jx.7kjx.com/?url=' + url
+            this.onlineUrl = url
           }
           this.videoPlaying('online')
           return
-        }
-        if (url.endsWith('.mp4') && this.playerType !== 'mp4') {
-          this.getPlayer('mp4')
-        } else if (url.endsWith('.m3u8') && this.playerType !== 'hls') {
-          this.getPlayer('hls')
+        } else {
+          const ext = url.match(/\.\w+?$/)[0].slice(1)
+          this.getPlayer(ext)
         }
         this.xg.src = url
         const key = this.video.key + '@' + this.video.info.id
         const startTime = VIDEO_DETAIL_CACHE[key].startPosition || 0
         this.xg.play()
+        setTimeout(() => {
+          if (!document.getElementById('xgplayer').querySelector('video')) {
+            this.getPlayer(this.playerType, true)
+            this.getUrls()
+          }
+        }, 1000)
         if (document.querySelector('xg-btn-showhistory')) document.querySelector('xg-btn-showhistory').style.display = 'block'
         if (document.querySelector('.xgplayer-playbackrate')) document.querySelector('.xgplayer-playbackrate').style.display = 'inline-block'
         this.xg.once('playing', () => {
@@ -702,6 +724,7 @@ export default {
     },
     async videoPlaying (isOnline) {
       const db = await history.find({ site: this.video.key, ids: this.video.info.id })
+      const videoFlag = this.video.info.videoFlag || ''
       let time = this.xg.currentTime || 0
       let duration = this.xg.duration || 0
       let startPosition = 0
@@ -727,8 +750,9 @@ export default {
         duration: duration,
         startPosition: startPosition,
         endPosition: endPosition,
-        detail: this.video.detail,
-        onlinePlay: isOnline
+        detail: this.DetailCache[this.video.key + '@' + this.video.info.id],
+        onlinePlay: isOnline,
+        videoFlag: videoFlag
       }
       await history.add(doc)
       this.updateStar()
@@ -779,13 +803,10 @@ export default {
     },
     prevEvent () {
       if (this.video.iptv) {
-        var index = this.channelList.findIndex(obj => obj.id === this.video.iptv.channelID)
-        if (index >= 1) {
-          var channel = this.channelList[index - 1]
-          this.playChannel(channel)
-        } else {
-          this.$message.warning('这已经是第一个频道了。')
-        }
+        let index = this.channelList.findIndex(obj => obj.id === this.video.iptv.channelID)
+        index = index === 0 ? this.channelList.length - 1 : index - 1
+        const channel = this.channelList[index]
+        this.playChannel(channel)
       } else {
         if (this.video.info.index >= 1) {
           this.video.info.index--
@@ -797,13 +818,10 @@ export default {
     },
     nextEvent () {
       if (this.video.iptv) {
-        var index = this.channelList.findIndex(obj => obj.id === this.video.iptv.channelID)
-        if (index < (this.channelList.length - 1)) {
-          var channel = this.channelList[index + 1]
-          this.playChannel(channel)
-        } else {
-          this.$message.warning('这已经是最后一个频道了。')
-        }
+        let index = this.channelList.findIndex(obj => obj.id === this.video.iptv.channelID)
+        index = index === this.channelList.length - 1 ? 0 : index + 1
+        const channel = this.channelList[index]
+        this.playChannel(channel)
       } else {
         if (this.video.info.index < (this.right.list.length - 1)) {
           this.video.info.index++
@@ -882,7 +900,7 @@ export default {
       }
     },
     async miniEvent () {
-      this.mainWindowBounds = JSON.parse(JSON.stringify(win.getBounds()))
+      if (!this.miniMode) this.mainWindowBounds = JSON.parse(JSON.stringify(win.getBounds()))
       let miniWindowBounds
       await mini.find().then(res => { if (res) miniWindowBounds = res.bounds })
       if (!miniWindowBounds) miniWindowBounds = { x: win.getPosition()[0], y: win.getPosition()[1], width: 550, height: 340 }
@@ -891,7 +909,7 @@ export default {
       document.querySelector('xg-btn-quitMiniMode').style.display = 'block'
       this.miniMode = true
     },
-    async exitMiniEvent () {
+    async saveMiniWindowState () {
       await mini.find().then(res => {
         let doc = {}
         doc = {
@@ -904,6 +922,9 @@ export default {
           mini.add(doc)
         }
       })
+    },
+    async exitMiniEvent () {
+      await this.saveMiniWindowState()
       win.setBounds(this.mainWindowBounds)
       this.xg.exitCssFullscreen()
       document.querySelector('xg-btn-quitMiniMode').style.display = 'none'
@@ -913,14 +934,16 @@ export default {
       this.share = {
         show: true,
         key: this.video.key,
-        info: this.video.info
+        info: this.DetailCache[this.video.key + '@' + this.video.info.id],
+        index: this.video.info.index
       }
     },
-    issueEvent () {
+    async issueEvent () {
+      const currentSite = await sites.find({ key: this.video.key })
       const info = {
-        video: this.video,
-        list: this.right.list,
-        playlist: VIDEO_DETAIL_CACHE[this.video.key + '@' + this.video.info.id] || [],
+        video: Object.assign({ site: currentSite, detail: this.DetailCache[this.video.key + '@' + this.video.info.id] }, this.video.info),
+        playlist: this.right.list.map(e => e.split('$')[1]),
+        playerType: this.onlineUrl ? '在线解析' : this.playerType,
         playerError: this.xg.error || '',
         playerState: this.xg.readyState || '',
         networkState: this.xg.networkState || ''
@@ -947,7 +970,7 @@ export default {
           this.$message.error('请设置第三方播放器路径')
           // 在线播放该视频
           if (playlistUrls[this.video.info.index].endsWith('.m3u8')) {
-            var link = 'https://www.m3u8play.com/?play=' + playlistUrls[this.video.info.index]
+            const link = 'http://hunlongyu.gitee.io/zy-player-web?url=' + playlistUrls[this.video.info.index] + '&name=' + this.video.info.name
             const open = require('open')
             open(link)
           }
@@ -970,11 +993,11 @@ export default {
       const path = require('path')
       const os = require('os')
       const fs = require('fs')
-      var filePath = path.join(os.tmpdir(), fileName + '.m3u')
+      const filePath = path.join(os.tmpdir(), fileName + '.m3u')
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath)
       }
-      var str = '#EXTM3U' + os.EOL
+      let str = '#EXTM3U' + os.EOL
       for (let ind = startIndex; ind < m3u8Arr.length; ind++) {
         str += `#EXTINF: -1, 第${ind + 1}集` + os.EOL
         str += m3u8Arr[ind] + os.EOL
@@ -1039,7 +1062,7 @@ export default {
     },
     listItemEvent (n) {
       if (this.video.iptv) {
-        var channel = this.channelList[n]
+        const channel = this.channelList[n]
         // 是直播源，直接播放
         this.playChannel(channel)
       } else {
@@ -1401,7 +1424,7 @@ export default {
         this.channelTree = []
         const groups = [...new Set(this.channelList.map(iptv => iptv.group))]
         groups.forEach(g => {
-          var doc = {
+          const doc = {
             label: g,
             children: this.channelList.filter(x => x.group === g).map(i => { return { label: i.name, channel: i } })
           }
@@ -1410,16 +1433,45 @@ export default {
       })
     },
     bindEvent () {
+      // 直播卡顿时换源换台
+      let stallIptvTimeout
+      let stallCount = 0
+      this.xg.on('waiting', () => {
+        if (this.isLive && this.setting.autoChangeSourceWhenIptvStalling) {
+          stallIptvTimeout = setTimeout(() => {
+            let index = this.right.sources.indexOf(this.video.iptv) + 1
+            if (index === this.right.sources.length) index = 0
+            stallCount++
+            if (stallCount >= this.right.sources.length) {
+              stallCount = 0
+              this.nextEvent()
+            } else {
+              this.playChannel(this.right.sources[index])
+            }
+          }, this.setting.waitingTimeInSec * 1000)
+        }
+      })
+      this.xg.on('canplay', () => {
+        stallCount = 0
+        clearTimeout(stallIptvTimeout)
+      })
+      this.xg.on('destroy', () => {
+        stallCount = 0
+        clearTimeout(stallIptvTimeout)
+      })
+
       this.xg.on('exitFullscreen', () => {
         if (this.miniMode) this.xg.getCssFullscreen()
       })
 
       this.xg.on('volumechange', () => {
         this.config.volume = this.xg.volume.toFixed(2)
-        setting.find().then(res => { res.volume = this.config.volume; setting.update(res) })
+        const volume = this.config.volume
+        setTimeout(() => { if (volume === this.config.volume) setting.find().then(res => { res.volume = this.config.volume; setting.update(res) }) }, 500)
       })
 
       this.xg.on('timeupdate', () => {
+        if (this.isLive) return
         const key = this.video.key + '@' + this.video.info.id
         if (VIDEO_DETAIL_CACHE[key] && VIDEO_DETAIL_CACHE[key].endPosition) {
           const time = this.xg.duration - VIDEO_DETAIL_CACHE[key].endPosition - this.xg.currentTime
@@ -1448,8 +1500,8 @@ export default {
         this.toggleHistory()
       })
 
-      this.xg.on('videoStop', () => {
-        if (this.miniMode) this.exitMiniEvent()
+      this.xg.on('videoStop', async () => {
+        if (this.miniMode) await this.exitMiniEvent()
         this.videoStop()
       })
 
@@ -1480,6 +1532,7 @@ export default {
       })
 
       this.xg.on('play', () => {
+        clearTimeout(stallIptvTimeout)
         if (!this.video.key) {
           if (!this.video.iptv && !this.video.info.ids) {
             // 如果当前播放页面的播放信息没有被赋值,播放历史记录
@@ -1488,7 +1541,7 @@ export default {
               this.videoStop()
               return
             }
-            var historyItem = this.right.history[0]
+            const historyItem = this.right.history[0]
             this.video = { key: historyItem.site, info: { id: historyItem.ids, name: historyItem.name, index: historyItem.index } }
           } else if (this.video.iptv && !this.isLive) {
             this.playChannel(this.video.iptv)
@@ -1509,7 +1562,8 @@ export default {
       this.state.showTimespanSetting = false
       this.right.list = []
       this.getAllhistory()
-      this.getPlayer(this.playerType)
+      if (this.playerType === 'flv') this.xg.destroy()
+      this.getPlayer('hls', true)
     },
     minMaxEvent () {
       win.on('minimize', () => {
@@ -1686,12 +1740,6 @@ export default {
 .xgplayer-skin-default .xgplayer-playbackrate {
   width: 40px !important;
 }
-.xgplayer-skin-default .xgplayer-playbackrate .name {
-  top: 10px !important;
-}
-.xgplayer-skin-default .xgplayer-playbackrate ul {
-  bottom: 25px;
-}
 .xgplayer-skin-default .xgplayer-playbackrate ul li {
   font-size: 13px !important;
 }
@@ -1740,6 +1788,7 @@ export default {
       .right {
         float: right;
         svg {
+          display: inline-block;
           margin-top: 8px;
           cursor: pointer;
         }

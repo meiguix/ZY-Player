@@ -3,23 +3,32 @@ import axios from 'axios'
 import parser from 'fast-xml-parser'
 import cheerio from 'cheerio'
 import { Parser as M3u8Parser } from 'm3u8-parser'
+// import FLVDemuxer from 'xgplayer-flv.js/src/flv/demux/flv-demuxer.js'
+import SocksProxyAgent from 'socks-proxy-agent'
 
 // axios使用系统代理  https://evandontje.com/2020/04/02/automatic-system-proxy-configuration-for-electron-applications/
 // xgplayer使用chromium代理设置，浏览器又默认使用系统代理 https://www.chromium.org/developers/design-documents/network-settings
 // 要在设置中添加代理设置，可参考https://stackoverflow.com/questions/37393248/how-connect-to-proxy-in-electron-webview
-var http = require('http')
-var https = require('http')
+const http = require('http')
+const https = require('http')
 const { remote } = require('electron')
-var win = remote.getCurrentWindow()
-var session = win.webContents.session
-var ElectronProxyAgent = require('electron-proxy-agent')
+const win = remote.getCurrentWindow()
+const session = win.webContents.session
+const ElectronProxyAgent = require('electron-proxy-agent')
+const URL = require('url')
+const request = require('request')
+let proxyURL
+
+// 取消axios请求  浅析cancelToken https://juejin.cn/post/6844904168277147661 https://masteringjs.io/tutorials/axios/cancel
+// const source = axios.CancelToken.source()
+// const cancelToken = source.token
 
 // 请求超时时限
 // axios.defaults.timeout = 10000 // 可能使用代理，增长超时
-const TIMEOUT = 6000
+const TIMEOUT = 20000
 
-// 重试次数，共请求3次
-axios.defaults.retry = 2
+// 重试次数，共请求2次
+axios.defaults.retry = 1
 
 // 请求的间隙
 axios.defaults.retryDelay = 1000
@@ -42,7 +51,7 @@ axios.interceptors.response.use(function (response) {
 }, function (err) { // 请求错误时做些事
   // 请求超时的之后，抛出 err.code = ECONNABORTED的错误..错误信息是 timeout of  xxx ms exceeded
   if (err.code === 'ECONNABORTED' && err.message.indexOf('timeout') !== -1) {
-    var config = err.config
+    const config = err.config
     config.__retryCount = config.__retryCount || 0
 
     if (config.__retryCount >= config.retry) {
@@ -52,7 +61,7 @@ axios.interceptors.response.use(function (response) {
 
     config.__retryCount += 1
 
-    var backoff = new Promise(function (resolve) {
+    const backoff = new Promise(function (resolve) {
       setTimeout(function () {
         resolve()
       }, config.retryDelay || 1)
@@ -99,7 +108,7 @@ const zy = {
     return new Promise((resolve, reject) => {
       this.getSite(key).then(res => {
         const url = res.api
-        axios.post(url).then(res => {
+        axios.get(url).then(res => {
           const data = res.data
           const json = parser.parse(data, this.xmlConfig)
           const jsondata = json.rss === undefined ? json : json.rss
@@ -144,7 +153,7 @@ const zy = {
         } else {
           url = `${site.api}?ac=videolist&pg=${pg}`
         }
-        axios.post(url).then(async res => {
+        axios.get(url).then(async res => {
           const data = res.data
           const json = parser.parse(data, this.xmlConfig)
           const jsondata = json.rss === undefined ? json : json.rss
@@ -176,7 +185,7 @@ const zy = {
         } else {
           url = `${site.api}?ac=videolist`
         }
-        axios.post(url).then(async res => {
+        axios.get(url).then(async res => {
           const data = res.data.match(/<list [^>]*>/)[0] + '</list>' // 某些源站不含页码时获取到的数据parser无法解析
           const json = parser.parse(data, this.xmlConfig)
           const jsondata = json.rss === undefined ? json : json.rss
@@ -203,15 +212,20 @@ const zy = {
     return new Promise((resolve, reject) => {
       this.getSite(key).then(res => {
         const site = res
-        wd = encodeURI(wd)
-        var url = `${site.api}?wd=${wd}`
-        axios.post(url, { timeout: 3000 }).then(res => {
+        const url = `${site.api}?wd=${encodeURI(wd)}`
+        axios.get(url, { timeout: 3000 }).then(res => {
           const data = res.data
           const json = parser.parse(data, this.xmlConfig)
           const jsondata = json.rss === undefined ? json : json.rss
           if (json && jsondata && jsondata.list) {
-            const videoList = jsondata.list.video
-            resolve(videoList)
+            let videoList = jsondata.list.video
+            if (Object.prototype.toString.call(videoList) === '[object Object]') videoList = [].concat(videoList)
+            videoList = videoList.filter(e => e.name.toLowerCase().includes(wd.toLowerCase()))
+            if (videoList.length) {
+              resolve(videoList)
+            } else {
+              resolve()
+            }
           }
         }).catch(err => {
           reject(err)
@@ -231,42 +245,54 @@ const zy = {
     return new Promise((resolve, reject) => {
       this.getSite(key).then(res => {
         const url = `${res.api}?ac=videolist&ids=${id}`
-        axios.post(url).then(res => {
+        axios.get(url).then(res => {
           const data = res.data
           const json = parser.parse(data, this.xmlConfig)
           const jsondata = json.rss === undefined ? json : json.rss
           const videoList = jsondata.list.video
-          // Parse m3u8List
-          var m3u8List = []
           // Parse video lists
-          var fullList = []
+          let fullList = []
+          let index = 0
+          const supportedFormats = ['m3u8', 'mp4']
           const dd = videoList.dl.dd
           const type = Object.prototype.toString.call(dd)
           if (type === '[object Array]') {
             for (const i of dd) {
-              const ext = Array.from(new Set(...i._t.split('#').map(e => e.split('$')[1].match(/\.\w+?$/))))
-              if (ext.length === 1) i._flag = ext[0].slice(1)
+              i._t = i._t.replace(/\$+/g, '$')
+              const ext = Array.from(new Set(...i._t.split('#').map(e => e.includes('$') ? e.split('$')[1].match(/\.\w+?$/) : e.match(/\.\w+?$/)))).map(e => e.slice(1))
+              if (ext.length && ext.length <= supportedFormats.length && ext.every(e => supportedFormats.includes(e))) {
+                if (ext.length === 1) {
+                  i._flag = ext[0]
+                } else {
+                  i._flag = index ? 'ZY支持-' + index : 'ZY支持'
+                  index++
+                }
+              }
               fullList.push(
                 {
                   flag: i._flag,
-                  list: i._t.split('#')
+                  list: i._t.split('#').filter(e => e && (e.startsWith('http') || (e.split('$')[1] && e.split('$')[1].startsWith('http'))))
                 }
               )
-              // 如果含有多个视频列表的话, 仅获取m3u8列表
-              if (i._flag.includes('m3u8') || i._t.includes('.m3u8')) {
-                m3u8List = i._t.split('#')
-              }
             }
           } else {
             fullList.push(
               {
                 flag: dd._flag,
-                list: dd._t.split('#')
+                list: dd._t.replace(/\$+/g, '$').split('#').filter(e => e && (e.startsWith('http') || (e.split('$')[1] && e.split('$')[1].startsWith('http'))))
               }
             )
-            m3u8List = dd._t.split('#')
           }
-          videoList.m3u8List = m3u8List
+          fullList.forEach(item => {
+            if (item.list.every(e => e.includes('$') && /^\s*\d+\s*$/.test(e.split('$')[0]))) item.list.sort((a, b) => { return a.split('$')[0] - b.split('$')[0] })
+          })
+          if (fullList.length > 1) { // 将ZY支持的播放列表前置
+            index = fullList.findIndex(e => supportedFormats.includes(e.flag) || e.flag.startsWith('ZY支持'))
+            if (index !== -1) {
+              const first = fullList.splice(index, 1)
+              fullList = first.concat(fullList)
+            }
+          }
           videoList.fullList = fullList
           resolve(videoList)
         }).catch(err => {
@@ -283,7 +309,7 @@ const zy = {
    * @param {*} id 资源唯一标识符 id
    * @returns
    */
-  download (key, id) {
+  download (key, id, videoFlag) {
     return new Promise((resolve, reject) => {
       let info = ''
       let downloadUrls = ''
@@ -291,7 +317,7 @@ const zy = {
         const site = res
         if (site.download) {
           const url = `${site.download}?ac=videolist&ids=${id}&ct=1`
-          axios.post(url).then(res => {
+          axios.get(url).then(res => {
             const data = res.data
             const json = parser.parse(data, this.xmlConfig)
             const jsondata = json.rss === undefined ? json : json.rss
@@ -300,10 +326,10 @@ const zy = {
             const type = Object.prototype.toString.call(dd)
             if (type === '[object Array]') {
               for (const i of dd) {
-                downloadUrls = i._t.split('#').map(e => encodeURI(e.split('$')[1])).join('\n')
+                downloadUrls = i._t.replace(/\$+/g, '$').split('#').map(e => encodeURI(e.includes('$') ? e.split('$')[1] : e)).join('\n')
               }
             } else {
-              downloadUrls = dd._t.split('#').map(e => encodeURI(e.split('$')[1])).join('\n')
+              downloadUrls = dd._t.replace(/\$+/g, '$').split('#').map(e => encodeURI(e.includes('$') ? e.split('$')[1] : e)).join('\n')
             }
             if (downloadUrls) {
               info = '调用下载接口获取到的链接已复制, 快去下载吧!'
@@ -317,9 +343,9 @@ const zy = {
           })
         } else {
           zy.detail(key, id).then(res => {
-            const list = [...res.m3u8List]
-            for (const i of list) {
-              const url = encodeURI(i.split('$')[1])
+            const dl = res.fullList.find(e => e.flag === videoFlag) || res.fullList[0]
+            for (const i of dl.list) {
+              const url = encodeURI(i.includes('$') ? i.split('$')[1] : i)
               downloadUrls += (url + '\n')
             }
             if (downloadUrls) {
@@ -358,22 +384,47 @@ const zy = {
    * @param {*} channel 直播频道 url
    * @returns boolean
    */
-  async checkChannel (channel) {
+  checkChannel (url) {
     return new Promise((resolve, reject) => {
-      axios.get(channel).then(res => {
-        const manifest = res.data
-        var parser = new M3u8Parser()
-        parser.push(manifest)
-        parser.end()
-        var parsedManifest = parser.manifest
-        if (parsedManifest.segments.length) {
-          resolve(true)
-        } else {
-          resolve(false)
+      const supportFormats = /\.(m3u8|flv)$/
+      const extRE = url.match(supportFormats) || new URL.URL(url).pathname.match(supportFormats)
+      if (extRE[1] === 'flv') {
+        const MAX_CONTENT_LENGTH = 2000 // axios配置maxContentLength不生效，先用request凑合
+        let receivedLength = 0
+        let options = { uri: url, gzip: true, timeout: 10000 }
+        if (proxyURL) {
+          if (proxyURL.startsWith('http')) options = Object.assign({ proxy: proxyURL }, options)
+          if (proxyURL.startsWith('socks5')) options = Object.assign({ agent: new SocksProxyAgent(proxyURL) }, options)
         }
-      }).catch(e => {
-        resolve(false)
-      })
+        const req = request.get(options)
+          .on('data', (str) => {
+            receivedLength += str.length
+            if (receivedLength > MAX_CONTENT_LENGTH) {
+              resolve(true) // 应该用FLVDemuxer.probe来检测，先凑合
+              req.abort()
+            }
+          })
+          .on('error', function (err) {
+            resolve(false)
+            console.log(err)
+          })
+          .on('end', () => { resolve(false) })
+      } else if (extRE[1] === 'm3u8') {
+        axios.get(url).then(res => {
+          const manifest = res.data
+          const parser = new M3u8Parser()
+          parser.push(manifest)
+          parser.end()
+          const parsedManifest = parser.manifest
+          if (parsedManifest.segments.length) {
+            resolve(true)
+          } else {
+            resolve(false)
+          }
+        }).catch(e => {
+          resolve(false)
+        })
+      }
     })
   },
   /**
@@ -385,16 +436,16 @@ const zy = {
   doubanLink (name, year) {
     return new Promise((resolve, reject) => {
       // 豆瓣搜索链接
-      var nameToSearch = name.replace(/\s/g, '')
-      var doubanSearchLink = 'https://www.douban.com/search?q=' + nameToSearch
+      const nameToSearch = name.replace(/\s/g, '')
+      const doubanSearchLink = 'https://www.douban.com/search?q=' + nameToSearch
       axios.get(doubanSearchLink).then(res => {
         const $ = cheerio.load(res.data)
         // 查询所有搜索结果, 看名字和年代是否相符
-        var link = ''
+        let link = ''
         $('div.result').each(function () {
-          var linkInDouban = $(this).find('div>div>h3>a').first()
-          var nameInDouban = linkInDouban.text().replace(/\s/g, '')
-          var subjectCast = $(this).find('span.subject-cast').text()
+          const linkInDouban = $(this).find('div>div>h3>a').first()
+          const nameInDouban = linkInDouban.text().replace(/\s/g, '')
+          const subjectCast = $(this).find('span.subject-cast').text()
           if (nameToSearch === nameInDouban && subjectCast && subjectCast.includes(year)) {
             link = linkInDouban.attr('href')
           }
@@ -418,14 +469,14 @@ const zy = {
    */
   doubanRate (name, year) {
     return new Promise((resolve, reject) => {
-      var nameToSearch = name.replace(/\s/g, '')
+      const nameToSearch = name.replace(/\s/g, '')
       this.doubanLink(nameToSearch, year).then(link => {
         if (link.includes('https://www.douban.com/search')) {
           resolve('暂无评分')
         } else {
           axios.get(link).then(response => {
             const parsedHtml = cheerio.load(response.data)
-            var rating = parsedHtml('body').find('#interest_sectl').first().find('strong').first()
+            const rating = parsedHtml('body').find('#interest_sectl').first().find('strong').first()
             if (rating.text()) {
               resolve(rating.text().replace(/\s/g, ''))
             } else {
@@ -440,16 +491,34 @@ const zy = {
       })
     })
   },
-  async proxy () {
+  get7kParseURL () {
+    return new Promise((resolve, reject) => {
+      axios.get('https://zy.7kjx.com/').then(res => {
+        const $ = cheerio.load(res.data)
+        const parseURL = $('body > div.container > div > div.stui-pannel > div.col-pd > p:contains("解析接口:")').first().find('a').text()
+        resolve(parseURL)
+      }).catch(err => { reject(err) })
+    })
+  },
+  getDefaultSites () {
+    const url = 'https://gitee.com/cuiocean/ZY-Player-Resources/raw/main/Sites/Sites.json'
+    return new Promise((resolve, reject) => {
+      axios.get(url).then(res => {
+        resolve(res.data)
+      }).catch(err => { reject(err) })
+    })
+  },
+  proxy () {
     return new Promise((resolve, reject) => {
       setting.find().then(db => {
         if (db && db.proxy && db.proxy.type === 'manual') {
           if (db.proxy.scheme && db.proxy.url && db.proxy.port) {
-            const proxyURL = db.proxy.scheme + '://' + db.proxy.url.trim() + ':' + db.proxy.port.trim()
+            proxyURL = db.proxy.scheme + '://' + db.proxy.url.trim() + ':' + db.proxy.port.trim()
             session.setProxy({ proxyRules: proxyURL })
             http.globalAgent = https.globalAgent = new ElectronProxyAgent(session)
           }
         } else {
+          proxyURL = ''
           session.setProxy({ proxyRules: 'direct://' })
           http.globalAgent = https.globalAgent = new ElectronProxyAgent(session)
         }

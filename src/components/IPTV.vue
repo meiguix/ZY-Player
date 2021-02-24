@@ -168,9 +168,9 @@ export default {
     },
     getFilters () {
       const groups = [...new Set(this.channelList.map(iptv => iptv.group))]
-      var filters = []
+      const filters = []
       groups.forEach(g => {
-        var doc = {
+        const doc = {
           text: g,
           value: g
         }
@@ -257,7 +257,7 @@ export default {
     },
     mergeChannel () {
       if (this.inputContent && this.multipleSelection.length) {
-        var channels = []
+        let channels = []
         const id = this.multipleSelection[0].id
         this.multipleSelection.forEach(ele => {
           channels = channels.concat(ele.channels)
@@ -274,8 +274,13 @@ export default {
       if (e.url) {
         this.video = { iptv: e }
       } else {
-        const prefer = e.prefer ? e.channels.find(c => c.id === e.prefer) : e.channels.filter(c => c.isActive)[0]
-        if (!prefer) return
+        let prefer
+        if (e.prefer) prefer = e.channels.find(c => c.id === e.prefer)
+        if (!prefer) prefer = e.channels.filter(c => c.isActive)[0]
+        if (!prefer) {
+          this.$message.error('当前频道所有源已全部停用，不可播放！')
+          return
+        }
         this.video = { iptv: prefer }
       }
       this.view = 'Play'
@@ -298,6 +303,7 @@ export default {
           ele.channels.splice(ele.channels.findIndex(e => e.id === row.id), 1)
           channelList.remove(row.channelID)
           if (ele.channels.length) {
+            if (ele.prefer === row.id) delete ele.prefer
             if (ele.channels.length === 1) ele.hasChildren = false
             channelList.add(ele)
             this.$set(this.$refs.iptvTable.store.states.lazyTreeNodeMap, ele.id, ele.channels)
@@ -320,7 +326,7 @@ export default {
       remote.dialog.showSaveDialog(options).then(result => {
         if (!result.canceled) {
           if (result.filePath.endsWith('m3u')) {
-            var writer = require('m3u').extendedWriter()
+            const writer = require('m3u').extendedWriter()
             this.iptvList.forEach(e => {
               writer.file(e.url, -1, e.name)
             })
@@ -360,11 +366,12 @@ export default {
               const parser = require('iptv-playlist-parser')
               const playlist = fs.readFileSync(file, { encoding: 'utf-8' })
               const result = parser.parse(playlist)
+              const supportFormats = /\.(m3u8|flv)$/
               result.items.forEach(ele => {
                 const urls = ele.url.split('#').filter(e => e.startsWith('http')) // 网址带#时自动分割
                 urls.forEach(url => {
-                  if (ele.name && url && new URL.URL(url).pathname.endsWith('.m3u8')) { // 网址可能带参数
-                    var doc = {
+                  if (ele.name && url && (supportFormats.test(url) || supportFormats.test(new URL.URL(url).pathname))) { // 网址可能带参数
+                    const doc = {
                       id: id,
                       name: ele.name,
                       url: url,
@@ -438,12 +445,12 @@ export default {
         res = res.filter(o => !this.iptvList.find(e => o.url === e.url))
         const resClone = JSON.parse(JSON.stringify(res))
         const uniqueChannelName = {}
-        for (var i = 0; i < resClone.length; i++) {
-          var channelName = resClone[i].name.trim().replace(/[- ]?(1080p|蓝光|超清|高清|标清|hd|cq|4k)(\d{1,2})?$/i, '')
+        for (let i = 0; i < resClone.length; i++) {
+          let channelName = resClone[i].name.trim().replace(/[- ]?(1080p|蓝光|超清|高清|标清|hd|cq|4k)(\d{1,2})?$/i, '')
           if (channelName.match(/cctv/i)) channelName = channelName.replace('-', '')
           if (Object.keys(uniqueChannelName).some(name => channelName.match(new RegExp(`${name}(1080p|4k|(?!\\d))`, 'i')))) continue // 避免重复
           const matchRule = new RegExp(`${channelName}(1080p|4k|(?!\\d))`, 'i')
-          for (var j = i; j < resClone.length; j++) {
+          for (let j = i; j < resClone.length; j++) {
             if (resClone[j].name.match(/cctv/i)) {
               resClone[j].name = resClone[j].name.replace('-', '')
             }
@@ -513,7 +520,7 @@ export default {
       })
     },
     resetId (channelList) {
-      var id = 1
+      let id = 1
       channelList.forEach(ele => {
         ele.id = id
         id += 1
@@ -575,7 +582,7 @@ export default {
       })
     },
     async checkChannelsBySite (channels) {
-      var siteList = {}
+      const siteList = {}
       channels.forEach(channel => {
         const site = channel.url.split('/')[2]
         if (siteList[site]) {
@@ -592,44 +599,50 @@ export default {
         await this.checkSingleChannel(c)
       }
     },
-    async checkSingleChannel (channel) {
-      if (this.setting.allowPassWhenIptvCheck && !channel.isActive) {
+    async checkSingleChannel (channel, force = false) {
+      if (this.stopFlag) {
         this.checkProgress += 1
         return
       }
-      channel.status = ' '
       const ele = this.channelList.find(e => e.id === channel.channelID)
-      if (this.stopFlag) {
-        this.checkProgress += 1
-        return channel.status
-      }
-      const flag = await zy.checkChannel(channel.url)
-      this.checkProgress += 1
-      ele.hasCheckedNum++
-      if (flag) {
-        channel.status = '可用'
+      if (!force && this.setting.allowPassWhenIptvCheck && (!channel.isActive || !ele.isActive)) {
+        if (!ele.isActive) {
+          ele.status = '跳过'
+        } else if (!channel.isActive) {
+          channel.status = '跳过'
+        }
       } else {
-        channel.status = '失效'
-        channel.isActive = false
-        if (this.setting.autocleanWhenIptvCheck) {
-          ele.channels.splice(ele.channels.findIndex(e => e.id === channel.id), 1)
-          ele.hasCheckedNum--
+        channel.status = ' '
+        const flag = await zy.checkChannel(channel.url)
+        if (flag) {
+          channel.status = '可用'
+        } else {
+          channel.status = '失效'
+          channel.isActive = false
+          if (this.setting.autocleanWhenIptvCheck) {
+            if (ele.prefer === channel.id) delete ele.prefer
+            ele.channels.splice(ele.channels.findIndex(e => e.id === channel.id), 1)
+            ele.hasCheckedNum--
+          }
         }
       }
+      this.checkProgress += 1
+      ele.hasCheckedNum++
       if (ele.hasCheckedNum === ele.channels.length) {
-        ele.status = ele.channels.some(channel => channel.status === '可用') ? '可用' : '失效'
-        if (ele.status === '失效') ele.isActive = false
+        if (ele.status === ' ') {
+          ele.status = ele.channels.some(channel => channel.status === '可用') ? '可用' : '失效'
+          if (ele.status === '失效') ele.isActive = false
+        }
         channelList.remove(channel.channelID)
         if (ele.channels.length === 1) ele.hasChildren = false
         if (ele.channels.length) channelList.add(ele)
       }
-      return channel.status
     },
     async checkChannel (row) {
       if (row.channels) {
         row.status = ' '
         row.hasCheckedNum = 0
-        row.channels.forEach(e => this.checkSingleChannel(e))
+        row.channels.forEach(e => this.checkSingleChannel(e, true))
       } else {
         this.checkSingleChannel(row)
       }

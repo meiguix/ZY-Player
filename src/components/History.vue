@@ -35,8 +35,8 @@
             width="180"
             label="观看至">
             <template slot-scope="scope">
-              <span v-if="scope.row.detail && scope.row.detail.m3u8List && scope.row.detail.m3u8List.length > 1">
-                第{{ scope.row.index + 1 }}集(共{{scope.row.detail.m3u8List.length}}集)
+              <span v-if="scope.row.detail && scope.row.detail.fullList[0].list && scope.row.detail.fullList[0].list.length > 1">
+                第{{ scope.row.index + 1 }}集(共{{scope.row.detail.fullList[0].list.length}}集)
               </span>
             </template>
           </el-table-column>
@@ -96,8 +96,8 @@
                     {{fmtMSS(props.data.time.toFixed(0))}}/{{fmtMSS(props.data.duration.toFixed(0))}}
                   </span>
                   <span v-if="props.data.onlinePlay">在线解析</span>
-                  <span v-if="props.data.detail && props.data.detail.m3u8List !== undefined && props.data.detail.m3u8List.length > 1">
-                    第{{ props.data.index + 1 }}集(共{{props.data.detail.m3u8List.length}}集)
+                  <span v-if="props.data.detail && props.data.detail.fullList[0].list !== undefined && props.data.detail.fullList[0].list.length > 1">
+                    第{{ props.data.index + 1 }}集(共{{props.data.detail.fullList[0].list.length}}集)
                   </span>
                 </div>
               </div>
@@ -111,7 +111,6 @@
 import { mapMutations } from 'vuex'
 import { history, sites, setting } from '../lib/dexie'
 import zy from '../lib/site/tools'
-import Sortable from 'sortablejs'
 import { remote } from 'electron'
 import fs from 'fs'
 import Waterfall from 'vue-waterfall-plugin'
@@ -172,14 +171,6 @@ export default {
       set (val) {
         this.SET_SETTING(val)
       }
-    },
-    DetailCache: {
-      get () {
-        return this.$store.getters.getDetailCache
-      },
-      set (val) {
-        this.SET_DetailCache(val)
-      }
     }
   },
   watch: {
@@ -192,7 +183,7 @@ export default {
     }
   },
   methods: {
-    ...mapMutations(['SET_VIEW', 'SET_DETAIL', 'SET_VIDEO', 'SET_SHARE', 'SET_SETTING', 'SET_DetailCache']),
+    ...mapMutations(['SET_VIEW', 'SET_DETAIL', 'SET_VIDEO', 'SET_SHARE', 'SET_SETTING']),
     fmtMSS (s) {
       return (s - (s %= 60)) / 60 + (s > 9 ? ':' : ':0') + s
     },
@@ -220,6 +211,7 @@ export default {
     removeSelectedItems () {
       if (!this.multipleSelection.length) this.multipleSelection = this.history
       this.multipleSelection.forEach(e => history.remove(e.id))
+      this.multipleSelection = []
       this.getAllhistory()
       this.updateDatabase()
     },
@@ -240,24 +232,17 @@ export default {
       } else {
         this.video = { key: e.site, info: { id: e.ids, name: e.name, index: 0 } }
       }
-      const cacheKey = this.video.key + '@' + this.video.info.id
-      if (!this.DetailCache[cacheKey]) {
-        zy.detail(e.site, e.ids).then(res => {
-          this.DetailCache[cacheKey] = res
-        })
-      }
-      this.video.detail = this.DetailCache[cacheKey]
       this.view = 'Play'
     },
     shareEvent (e) {
       this.share = {
         show: true,
         key: e.site,
-        info: e
+        info: e.detail
       }
     },
     downloadEvent (e) {
-      zy.download(e.site, e.ids).then(res => {
+      zy.download(e.site, e.ids, e.videoFlag).then(res => {
         clipboard.writeText(res.downloadUrls)
         this.$message.success(res.info)
       }).catch((err) => {
@@ -293,8 +278,14 @@ export default {
       remote.dialog.showOpenDialog(options).then(result => {
         if (!result.canceled) {
           result.filePaths.forEach(file => {
-            var str = fs.readFileSync(file)
+            const str = fs.readFileSync(file)
             const json = JSON.parse(str)
+            json.forEach(record => {
+              if (record.detail && record.detail.m3u8List) {
+                record.detail.fullList = [].concat({ flag: 'm3u8', list: record.detail.m3u8List })
+                delete record.detail.m3u8List
+              }
+            })
             history.bulkAdd(json).then(res => {
               this.$message.success('导入成功')
               this.getAllhistory()
@@ -314,7 +305,7 @@ export default {
       })
     },
     getSiteName (key) {
-      var site = this.sites.find(e => e.key === key)
+      const site = this.sites.find(e => e.key === key)
       if (site) {
         return site.name
       }
@@ -328,7 +319,7 @@ export default {
     },
     updateDatabase () {
       history.clear().then(res => {
-        var id = length
+        let id = length
         this.history.forEach(ele => {
           ele.id = id
           id -= 1
@@ -336,21 +327,8 @@ export default {
         })
       })
     },
-    rowDrop () {
-      if (!document.getElementById('history-table')) return
-      const tbody = document.getElementById('history-table').querySelector('.el-table__body-wrapper tbody')
-      const _this = this
-      Sortable.create(tbody, {
-        onEnd ({ newIndex, oldIndex }) {
-          const currRow = _this.history.splice(oldIndex, 1)[0]
-          _this.history.splice(newIndex, 0, currRow)
-          _this.updateDatabase()
-        }
-      })
-    },
     updateViewMode () {
       if (this.setting.historyViewMode === 'table') {
-        setTimeout(() => { this.rowDrop() }, 100)
         this.showShiftPrompt()
       } else {
         setTimeout(() => { if (this.$refs.historyWaterfall) this.$refs.historyWaterfall.refresh() }, 700)
@@ -373,7 +351,6 @@ export default {
     }
   },
   mounted () {
-    if (this.setting.historyViewMode === 'table') setTimeout(() => { this.rowDrop() }, 100)
     addEventListener('keydown', code => { if (code.keyCode === 16) this.shiftDown = true })
     addEventListener('keyup', code => { if (code.keyCode === 16) this.shiftDown = false })
     addEventListener('resize', () => {

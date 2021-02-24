@@ -36,7 +36,7 @@
           </div>
         </div>
         <div class="operate">
-          <span @click="playEvent(0)">播放</span>
+          <span @click="playEvent(selectedEpisode)">播放</span>
           <span @click="starEvent">收藏</span>
           <span @click="downloadEvent">下载</span>
           <span @click="shareEvent">分享</span>
@@ -61,7 +61,7 @@
         </div>
         <div class="m3u8">
           <div class="box">
-            <span v-for="(i, j) in videoList" :key="j" @click="playEvent(j)">{{i | ftName}}</span>
+            <span v-bind:class="{ selected: j === selectedEpisode }" v-for="(i, j) in videoList" :key="j" @click="playEvent(j)" @mouseenter="() => { selectedEpisode = j }">{{ i | ftName(j) }}</span>
           </div>
         </div>
       </div>
@@ -87,14 +87,19 @@ export default {
       videoFullList: [],
       info: {},
       playOnline: false,
+      selectedEpisode: 0, // 选定集数
       selectedOnlineSite: '哔嘀',
       onlineSites: ['哔嘀', '素白白', '简影', '极品', '喜欢看', '1080影视']
     }
   },
   filters: {
-    ftName (e) {
-      const name = e.split('$')[0]
-      return name
+    ftName (e, n) {
+      const num = e.split('$')
+      if (num.length > 1) {
+        return e.split('$')[0]
+      } else {
+        return `第${(n + 1)}集`
+      }
     }
   },
   computed: {
@@ -151,9 +156,16 @@ export default {
     close () {
       this.detail.show = false
     },
-    updateVideoList (e) {
+    async updateVideoList (e) {
       this.videoFlag = e.flag
       this.videoList = e.list
+      const db = await history.find({ site: this.detail.key, ids: this.detail.info.id })
+      if (db) {
+        const doc = { ...db }
+        doc.videoFlag = e.flag
+        delete doc.id
+        history.update(db.id, doc)
+      }
     },
     async playEvent (n) {
       if (!this.playOnline) {
@@ -167,7 +179,7 @@ export default {
         this.view = 'Play'
         this.detail.show = false
       } else {
-        const db = await history.find({ site: this.detail.key, ids: this.detail.info.id })
+        const db = await history.find({ site: this.detail.key, ids: this.info.id })
         if (db) {
           db.index = n
           db.detail = this.info
@@ -238,7 +250,7 @@ export default {
       }
     },
     downloadEvent () {
-      zy.download(this.detail.key, this.info.id).then(res => {
+      zy.download(this.detail.key, this.info.id, this.videoFlag).then(res => {
         clipboard.writeText(res.downloadUrls)
         this.$message.success(res.info)
       }).catch((err) => {
@@ -249,7 +261,8 @@ export default {
       this.share = {
         show: true,
         key: this.detail.key,
-        info: this.info
+        info: this.info,
+        index: this.selectedEpisode
       }
     },
     doubanLinkEvent () {
@@ -268,6 +281,11 @@ export default {
     async getDetailInfo () {
       const id = this.detail.info.ids || this.detail.info.id
       const cacheKey = this.detail.key + '@' + id
+      const db = await history.find({ site: this.detail.key, ids: id })
+      if (db) {
+        this.videoFlag = db.videoFlag
+        this.selectedEpisode = db.index
+      }
       if (!this.DetailCache[cacheKey]) {
         this.DetailCache[cacheKey] = await zy.detail(this.detail.key, id)
       }
@@ -275,7 +293,7 @@ export default {
       if (res) {
         this.info = res
         this.$set(this.info, 'rate', this.DetailCache[cacheKey].rate || '')
-        this.videoFlag = res.fullList[0].flag
+        this.videoFlag = this.videoFlag || res.fullList[0].flag
         this.videoList = res.fullList[0].list
         this.videoFullList = res.fullList
         this.loading = false

@@ -33,11 +33,11 @@
           </div>
         </div>
       </div>
-      <div class="shortcut">
+      <div class="shortcut" title="清理缓存后图片资源需重新下载，不建议清理，软件会根据磁盘空间动态管理缓存大小">
         <div class="title">缓存</div>
         <div class="shortcut-box">
           <div class="zy-select">
-            <div class="vs-placeholder vs-noAfter" @click="clearCache">清理视频缓存</div>
+            <div class="vs-placeholder vs-noAfter" @click="clearCache">清理缓存</div>
           </div>
         </div>
       </div>
@@ -75,6 +75,10 @@
           <div class="zy-input">
            <input type="checkbox" v-model = "d.autocleanWhenIptvCheck" @change="updateSettingEvent"> 检测时自动清理无效源
           </div>
+          <div class="zy-input">
+          <input type="checkbox" v-model = "d.autoChangeSourceWhenIptvStalling" @change="updateSettingEvent">
+          卡顿时自动换源换台:<input style="width:50px" type="number" min=0 v-model.number = "d.waitingTimeInSec" @change="updateSettingEvent">秒
+          </div>
         </div>
       </div>
       <div class="site">
@@ -82,6 +86,12 @@
         <div class="site-box">
           <div class="zy-select">
             <div class="vs-placeholder vs-noAfter" @click="editSitesEvent">编辑源</div>
+          </div>
+          <div class="zy-select">
+            <div class="vs-placeholder vs-noAfter" @click="show.configDefaultParseUrlDialog = true">设置默认解析接口</div>
+          </div>
+          <div class="zy-select">
+            <div class="vs-placeholder vs-noAfter" @click="show.configSitesDataUrlDialog = true">设置源站接口文件</div>
           </div>
           <div class="zy-input" @click="toggleExcludeRootClasses">
            <input type="checkbox" v-model = "d.excludeRootClasses" @change="updateSettingEvent"> 屏蔽主分类
@@ -148,6 +158,34 @@
         <span>所有资源来自网上, 该软件不参与任何制作, 上传, 储存等内容, 禁止传播违法资源. 该软件仅供学习参考, 请于安装后24小时内删除.</span>
       </div>
     </div>
+    <div> <!-- 设置默认解析接口 -->
+      <el-dialog :visible.sync="show.configDefaultParseUrlDialog" v-if='show.configDefaultParseUrlDialog' title="设置默认解析接口" :append-to-body="true" @close="closeDialog">
+        <el-form label-width="45px" label-position="left">
+          <el-form-item label="URL:">
+            <el-input v-model="setting.defaultParseURL" :autosize="{ minRows: 2, maxRows: 4}" type="textarea" placeholder="请输入解析接口地址，为空时会自动设置，重置时会自动更新默认接口地址"/>
+          </el-form-item>
+        </el-form>
+        <span slot="footer" class="dialog-footer">
+          <el-button @click="closeDialog">取消</el-button>
+          <el-button type="danger" @click="get7kParseURL">重置</el-button>
+          <el-button type="primary" @click="configDefaultParseURL">确定</el-button>
+        </span>
+      </el-dialog>
+    </div>
+    <div> <!-- 设置源站接口文件 -->
+      <el-dialog :visible="show.configSitesDataUrlDialog" v-if='show.configSitesDataUrlDialog' title="设置源站接口文件" :append-to-body="true" @close="closeDialog">
+        <el-form label-width="45px" label-position="left">
+          <el-form-item label="URL:">
+            <el-input v-model="setting.sitesDataURL" :autosize="{ minRows: 2, maxRows: 4}" type="textarea" placeholder="请输入解析接口地址，为空时会自动设置，重置时会自动更新默认接口地址"/>
+          </el-form-item>
+        </el-form>
+        <span slot="footer" class="dialog-footer">
+          <el-button @click="closeDialog">取消</el-button>
+          <el-button type="danger" @click="getDefaultdeSitesDataURL">重置</el-button>
+          <el-button type="primary" @click="configSitesDataURL">确定</el-button>
+        </span>
+      </el-dialog>
+    </div>
     <div> <!-- 输入密码页面 -->
       <el-dialog :visible.sync="show.checkPasswordDialog" v-if='show.checkPasswordDialog' :append-to-body="true" @close="closeDialog" width="300px">
         <el-form label-width="75px" label-position="left">
@@ -205,14 +243,11 @@
       <div class="wrapper">
         <div class="body">
           <div class="content" v-html="update.html"></div>
-          <div class="progress" v-show="update.percent > 0">
-            <el-progress :percentage="update.percent"></el-progress>
-            <div class="size" style="font-size: 14px">更新包大小: {{update.size}} KB</div>
-          </div>
         </div>
         <div class="footer">
-          <el-button size="small" @click="cancelUpdate">取消</el-button>
-          <el-button size="small" v-show="!update.downloaded" @click="startUpdate">更新</el-button>
+          <el-button size="small" @click="closeUpdate">关闭</el-button>
+          <el-button size="small" v-show="update.showDownload" @click="startUpdate">更新</el-button>
+          <el-button size="small" v-show="!update.showDownload && !update.downloaded">正在更新...</el-button>
           <el-button size="small" v-show="update.downloaded" @click="installUpdate">安装</el-button>
         </div>
       </div>
@@ -223,7 +258,7 @@
 import { mapMutations } from 'vuex'
 import pkg from '../../package.json'
 import { setting, sites, shortcut } from '../lib/dexie'
-import { sites as defaultSites, localKey as defaultShortcuts } from '../lib/dexie/initData'
+import { localKey as defaultShortcuts } from '../lib/dexie/initData'
 import { shell, clipboard, remote, ipcRenderer } from 'electron'
 import db from '../lib/dexie/dexie'
 import zy from '../lib/site/tools'
@@ -241,7 +276,9 @@ export default {
         checkPasswordDialog: false,
         changePasswordDialog: false,
         proxy: false,
-        proxyDialog: false
+        proxyDialog: false,
+        configDefaultParseUrlDialog: false,
+        configSitesDataUrlDialog: false
       },
       d: { },
       latestVersion: pkg.version,
@@ -258,9 +295,8 @@ export default {
         version: '',
         show: false,
         html: '',
-        percent: 0,
-        size: 0,
-        downloaded: false
+        downloaded: false,
+        showDownload: true
       }
     }
   },
@@ -291,13 +327,24 @@ export default {
       setting.find().then(res => {
         this.d = res
         this.setting = this.d
+        if (!this.setting.defaultParseURL) this.configDefaultParseURL()
+        if (!this.setting.sitesDataURL) this.getDefaultdeSitesDataURL()
+      })
+    },
+    getDefaultSites () {
+      zy.getDefaultSites(this.setting.sitesDataURL).then(res => {
+        if (res.length > 0) {
+          sites.clear().then(sites.bulkAdd(res))
+        }
+      }).catch(error => {
+        this.$message.error('获取云端源站失败. ' + error)
       })
     },
     getSites () {
       sites.all().then(res => {
         if (res.length <= 0) {
           this.$message.warning('检测到视频源未能正常加载, 即将重置源.')
-          sites.clear().then(sites.bulkAdd(defaultSites).then(this.getSites()))
+          this.getDefaultSites()
         }
       })
     },
@@ -327,6 +374,29 @@ export default {
       this.d.excludeRootClasses = !this.d.excludeRootClasses
       this.updateSettingEvent()
     },
+    async get7kParseURL () {
+      this.$message.info('正在获取7K源解析地址...')
+      const parseURL = await zy.get7kParseURL()
+      if (parseURL.startsWith('http')) {
+        this.$message.success('获取成功，更新应用默认解析接口地址...')
+        this.setting.defaultParseURL = parseURL
+      }
+    },
+    async configDefaultParseURL () {
+      if (!this.setting.defaultParseURL) await this.get7kParseURL()
+      this.d.defaultParseURL = this.setting.defaultParseURL.trim()
+      this.show.configDefaultParseUrlDialog = false
+      this.updateSettingEvent()
+    },
+    getDefaultdeSitesDataURL () {
+      this.setting.sitesDataURL = 'https://gitee.com/cuiocean/ZY-Player-Resources/raw/main/Sites/Sites.json'
+    },
+    configSitesDataURL () {
+      if (!this.setting.sitesDataURL) this.getDefaultdeSitesDataURL()
+      this.d.sitesDataURL = this.setting.sitesDataURL
+      this.show.configSitesDataUrlDialog = false
+      this.updateSettingEvent()
+    },
     selectLocalPlayer () {
       const options = {
         filters: [
@@ -337,7 +407,7 @@ export default {
       }
       remote.dialog.showOpenDialog(options).then(result => {
         if (!result.canceled) {
-          var playerPath = result.filePaths[0].replace(/\\/g, '/')
+          const playerPath = result.filePaths[0].replace(/\\/g, '/')
           this.$message.success('设定第三方播放器路径为：' + result.filePaths[0])
           this.d.externalPlayer = playerPath
           this.updateSettingEvent()
@@ -369,6 +439,8 @@ export default {
     async closeDialog () {
       this.show.checkPasswordDialog = false
       this.show.changePasswordDialog = false
+      this.show.configDefaultParseUrlDialog = false
+      this.show.configSitesDataUrlDialog = false
       if (this.show.proxyDialog) {
         this.show.proxyDialog = false
         this.setting.proxy.type = 'none'
@@ -498,17 +570,15 @@ export default {
     openUpdate () {
       this.update.show = true
     },
-    cancelUpdate () {
+    closeUpdate () {
       this.update.show = false
     },
     startUpdate () {
+      this.update.showDownload = false
       ipcRenderer.send('downloadUpdate')
-      ipcRenderer.on('download-progress', (info, progress) => {
-        this.update.size = progress.total
-        this.update.percent = parseFloat(progress.percent).toFixed(1)
-      })
       ipcRenderer.on('update-downloaded', () => {
         this.update.downloaded = true
+        this.$message.success('更新已下载完成！Mac用户须手动点击“安装”，其它系统会在退出后自动安装')
       })
     },
     installUpdate () {

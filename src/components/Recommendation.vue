@@ -190,7 +190,7 @@ export default {
       }
     },
     filteredRecommendations () {
-      var filteredData = this.recommendations.filter(x => (this.selectedAreas.length === 0) || this.selectedAreas.includes(x.detail.area))
+      let filteredData = this.recommendations.filter(x => (this.selectedAreas.length === 0) || this.selectedAreas.includes(x.detail.area))
       filteredData = filteredData.filter(x => (this.selectedTypes.length === 0) || this.selectedTypes.includes(x.detail.type))
       return filteredData
     }
@@ -236,7 +236,7 @@ export default {
       }
     },
     updateEvent () {
-      const url = 'https://raw.githubusercontent.com/cuiocean/ZY-Player-Resources/main/Recommendations/Recommendations.json'
+      const url = 'https://gitee.com/cuiocean/ZY-Player-Resources/raw/main/Recommendations/Recommendations.json'
       this.loading = true
       const axios = require('axios')
       axios.get(url).then(res => {
@@ -279,8 +279,11 @@ export default {
         info: e.detail
       }
     },
-    downloadEvent (e) {
-      zy.download(e.key, e.ids).then(res => {
+    async downloadEvent (e) {
+      const db = await history.find({ site: e.key, ids: e.ids })
+      let videoFlag
+      if (db) videoFlag = db.videoFlag
+      zy.download(e.key, e.ids, videoFlag).then(res => {
         clipboard.writeText(res.downloadUrls)
         this.$message.success(res.info)
       }).catch((err) => {

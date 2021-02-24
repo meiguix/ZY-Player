@@ -107,7 +107,7 @@
                   <div class="update" v-if="props.data.hasUpdate">
                     <span>有更新</span>
                   </div>
-                  <div class="progress" v-if="props.data.index && props.data.detail && props.data.detail.m3u8List !== undefined && props.data.detail.m3u8List.length > 1">
+                  <div class="progress" v-if="props.data.index && props.data.detail && props.data.detail.fullList[0].list !== undefined && props.data.detail.fullList[0].list.length > 1">
                   <span>
                     看至第{{ props.data.index + 1 }}集
                   </span>
@@ -138,7 +138,7 @@
 </template>
 <script>
 import { mapMutations } from 'vuex'
-import { star, sites, setting } from '../lib/dexie'
+import { history, star, sites, setting } from '../lib/dexie'
 import zy from '../lib/site/tools'
 import { remote } from 'electron'
 import fs from 'fs'
@@ -200,6 +200,14 @@ export default {
       },
       set (val) {
         this.SET_SETTING(val)
+      }
+    },
+    DetailCache: {
+      get () {
+        return this.$store.getters.getDetailCache
+      },
+      set (val) {
+        this.SET_DetailCache(val)
       }
     }
   },
@@ -269,9 +277,9 @@ export default {
     },
     async playEvent (e) {
       if (e.index) {
-        this.video = { key: e.key, info: { id: e.ids, name: e.name, index: e.index }, detail: e.detail }
+        this.video = { key: e.key, info: { id: e.ids, name: e.name, index: e.index } }
       } else {
-        this.video = { key: e.key, info: { id: e.ids, name: e.name, index: 0 }, detail: e.detail }
+        this.video = { key: e.key, info: { id: e.ids, name: e.name, index: 0 } }
       }
       if (e.hasUpdate) {
         this.clearHasUpdateFlag(e)
@@ -306,21 +314,24 @@ export default {
         this.getFavorites()
       }
     },
-    updateEvent (e) {
-      zy.detail(e.key, e.ids).then(detailRes => {
-        var doc = {
+    async updateEvent (e) {
+      try {
+        if (!this.DetailCache[e.key + '@' + e.ids]) {
+          this.DetailCache[e.key + '@' + e.ids] = await zy.detail(e.key, e.ids)
+        }
+        const doc = {
           id: e.id,
           key: e.key,
           ids: e.ids,
           site: e.site,
           name: e.name,
-          detail: detailRes,
+          detail: this.DetailCache[e.key + '@' + e.ids],
           index: e.index
         }
         star.get(e.id).then(resStar => {
-          if (!e.hasUpdate && e.detail.last !== detailRes.last) {
+          if (!e.hasUpdate && e.detail.last !== doc.detail.last) {
             doc.hasUpdate = true
-            var msg = `同步"${e.name}"成功, 检查到更新。`
+            const msg = `同步"${e.name}"成功, 检查到更新。`
             this.$message.success(msg)
           } else {
             this.numNoUpdate += 1
@@ -328,10 +339,10 @@ export default {
           star.update(e.id, doc)
           this.getFavorites()
         })
-      }).catch(err => {
-        var msg = `同步"${e.name}"失败, 请重试。`
+      } catch (err) {
+        const msg = `同步"${e.name}"失败, 请重试。`
         this.$message.warning(msg, err)
-      })
+      }
     },
     updateAllEvent () {
       this.numNoUpdate = 0
@@ -339,8 +350,11 @@ export default {
         this.updateEvent(e)
       })
     },
-    downloadEvent (e) {
-      zy.download(e.key, e.ids).then(res => {
+    async downloadEvent (e) {
+      const db = await history.find({ site: e.key, ids: e.ids })
+      let videoFlag
+      if (db) videoFlag = db.videoFlag
+      zy.download(e.key, e.ids, videoFlag).then(res => {
         clipboard.writeText(res.downloadUrls)
         this.$message.success(res.info)
       }).catch((err) => {
@@ -351,7 +365,7 @@ export default {
       if (row.site) {
         return row.site.name
       } else {
-        var site = this.sites.find(e => e.key === row.key)
+        const site = this.sites.find(e => e.key === row.key)
         if (site) {
           return site.name
         }
@@ -403,10 +417,10 @@ export default {
       }
       remote.dialog.showOpenDialog(options).then(result => {
         if (!result.canceled) {
-          var starList = Array.from(this.list)
-          var id = this.list.length + 1
+          const starList = Array.from(this.list)
+          let id = this.list.length + 1
           result.filePaths.forEach(file => {
-            var str = fs.readFileSync(file)
+            const str = fs.readFileSync(file)
             const json = JSON.parse(str)
             json.reverse().forEach(ele => {
               const starExists = starList.some(x => x.key === ele.key && x.ids === ele.ids)
@@ -421,7 +435,7 @@ export default {
                   last: ele.last,
                   note: ele.note
                 }
-                var doc = {
+                const doc = {
                   id: id,
                   key: ele.key,
                   ids: ele.ids,
@@ -454,7 +468,7 @@ export default {
     updateDatabase () {
       this.syncTableData()
       star.clear().then(res => {
-        var id = this.list.length
+        let id = this.list.length
         this.list.forEach(ele => {
           ele.id = id
           id -= 1

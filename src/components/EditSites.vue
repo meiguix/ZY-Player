@@ -95,7 +95,7 @@
             <el-input v-model="siteInfo.download" :autosize="{ minRows: 2, maxRows: 4}" type="textarea" placeholder="请输入Download接口地址，可以空着"/>
           </el-form-item>
           <el-form-item label="解析接口" prop='jiexiUrl'>
-            <el-input v-model="siteInfo.jiexiUrl" :autosize="{ minRows: 2, maxRows: 4}" type="textarea" placeholder="请输入解析接口地址，可以空着"/>
+            <el-input v-model="siteInfo.jiexiUrl" :autosize="{ minRows: 2, maxRows: 4}" type="textarea" placeholder="请输入解析接口地址，默认源自带解析,若要调用应用默认解析接口请输入默认或default"/>
           </el-form-item>
           <el-form-item label="分组" prop='group'>
             <el-select v-model="siteInfo.group" allow-create filterable default-first-option placeholder="请输入分组">
@@ -119,7 +119,6 @@ import { mapMutations } from 'vuex'
 import { sites, setting } from '../lib/dexie'
 import zy from '../lib/site/tools'
 import { remote } from 'electron'
-import { sites as defaultSites } from '../lib/dexie/initData'
 import fs from 'fs'
 import Sortable from 'sortablejs'
 
@@ -173,9 +172,9 @@ export default {
     },
     getFilters () {
       const groups = [...new Set(this.sites.map(site => site.group))]
-      var filters = []
+      const filters = []
       groups.forEach(g => {
-        var doc = {
+        const doc = {
           text: g,
           value: g
         }
@@ -327,8 +326,8 @@ export default {
       if (!this.checkSiteKey()) {
         return false
       }
-      var randomstring = require('randomstring')
-      var doc = {
+      const randomstring = require('randomstring')
+      const doc = {
         key: this.dialogType === 'edit' ? this.siteInfo.key : this.siteInfo.key ? this.siteInfo.key : randomstring.generate(6),
         id: this.dialogType === 'edit' ? this.siteInfo.id : this.sites.length ? this.sites[this.sites.length - 1].id + 1 : 1,
         name: this.siteInfo.name,
@@ -387,7 +386,7 @@ export default {
       remote.dialog.showOpenDialog(options).then(result => {
         if (!result.canceled) {
           result.filePaths.forEach(file => {
-            var str = fs.readFileSync(file)
+            const str = fs.readFileSync(file)
             const json = JSON.parse(str)
             json.forEach(ele => {
               if (ele.api && this.sites.filter(x => x.key === ele.key).length === 0 && this.sites.filter(x => x.name === ele.name && x.api === ele.api).length === 0) {
@@ -410,13 +409,20 @@ export default {
       })
     },
     resetSitesEvent () {
-      this.stopFlag = true
-      if (this.checkAllSitesLoading) {
-        this.$message.info('部分检测还未完全终止, 请稍等...')
-        return
+      let url = this.setting.sitesDataURL
+      if (!url) {
+        // 如果没有设置源站文件链接,使用默认的gitee源
+        url = 'https://gitee.com/cuiocean/ZY-Player-Resources/raw/main/Sites/Sites.json'
       }
-      sites.clear().then(sites.bulkAdd(defaultSites).then(this.getSites()))
-      this.$message.success('重置源成功')
+      zy.getDefaultSites(url).then(res => {
+        if (res.length > 0) {
+          sites.clear().then(sites.bulkAdd(res))
+          this.$message.success('重置源成功')
+          this.getSites()
+        }
+      }).catch(error => {
+        this.$message.error('导入云端源站失败. ' + error)
+      })
     },
     moveToTopEvent (i) {
       if (this.checkAllSitesLoading) {
@@ -436,7 +442,7 @@ export default {
       sites.add(row)
     },
     resetId (inArray) {
-      var id = 1
+      let id = 1
       inArray.forEach(ele => {
         ele.id = id
         id += 1
@@ -446,7 +452,7 @@ export default {
       // 因为el-table的数据是单向绑定,我们先同步el-table里的数据和其绑定的数据
       this.syncTableData()
       sites.clear().then(res => {
-        var id = 1
+        let id = 1
         this.sites.forEach(ele => {
           ele.id = id
           id += 1
@@ -467,7 +473,7 @@ export default {
         return false
       }
       const tbody = document.getElementById('sites-table').querySelector('.el-table__body-wrapper tbody')
-      var _this = this
+      const _this = this
       Sortable.create(tbody, {
         onEnd ({ newIndex, oldIndex }) {
           const currRow = _this.sites.splice(oldIndex, 1)[0]
